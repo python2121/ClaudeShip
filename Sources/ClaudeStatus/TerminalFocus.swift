@@ -68,6 +68,9 @@ enum TerminalFocus {
     // MARK: Entry point
 
     static func focus(_ session: ClaudeSession) -> Outcome {
+        if let hubId = session.hubId {
+            return openTerminal(cwd: session.cwd, command: hubAttachCommand(cwd: session.cwd, hubId: hubId))
+        }
         if session.isBackground { return attachBackground(session) }
         guard let app = hostApp(of: session.pid) else { return .noHostApp }
         let adapter = adapter(forBundleId: app.bundleIdentifier)
@@ -130,18 +133,28 @@ enum TerminalFocus {
         "cd \(shellSingleQuoted(cwd)) && claude attach \(shellSingleQuoted(attachId))"
     }
 
+    /// Same, for a session the hub owns.
+    static func hubAttachCommand(cwd: String, hubId: String) -> String {
+        "cd \(shellSingleQuoted(cwd)) && \(HubCLI.commandName) hub attach \(shellSingleQuoted(hubId))"
+    }
+
     static func shellSingleQuoted(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func attachBackground(_ session: ClaudeSession) -> Outcome {
         guard let attachId = session.attachId, !attachId.isEmpty else { return .noAttachId }
+        return openTerminal(cwd: session.cwd, command: attachCommand(cwd: session.cwd, attachId: attachId))
+    }
+
+    /// A new window in the user's terminal, in `cwd`, with `command` typed
+    /// into its shell.
+    private static func openTerminal(cwd: String, command: String) -> Outcome {
         let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
         let bundleId = attachTerminalBundleId(running: running)
-        let command = attachCommand(cwd: session.cwd, attachId: attachId)
         let script: String
         switch bundleId {
-        case ghosttyBundleId: script = ghosttyAttachScript(cwd: session.cwd, command: command)
+        case ghosttyBundleId: script = ghosttyAttachScript(cwd: cwd, command: command)
         case itermBundleId: script = itermAttachScript(command: command)
         default: script = terminalAppAttachScript(command: command)
         }

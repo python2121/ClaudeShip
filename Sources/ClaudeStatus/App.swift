@@ -7,6 +7,18 @@ struct ClaudeStatusMain {
     private static let appDelegate = AppDelegate()
 
     static func main() {
+        // The session hub and its terminal client share this binary. The
+        // installed copy is invoked as `claudeandrew`, where every argument
+        // belongs to claude — so this dispatch comes before any flag
+        // checks. A dev build reaches the same code with `--cli`.
+        let arguments = CommandLine.arguments
+        if let invokedAs = arguments.first, (invokedAs as NSString).lastPathComponent == HubCLI.commandName {
+            HubCLI.run(Array(arguments.dropFirst()))
+        }
+        if arguments.count > 1, arguments[1] == "--cli" {
+            HubCLI.run(Array(arguments.dropFirst(2)))
+        }
+
         // Hook helper mode: Claude Code's PermissionRequest hook pipes the
         // request in on stdin; we relay it to the running app and print a
         // verdict (or nothing — silence hands the prompt back to the
@@ -44,7 +56,7 @@ struct ClaudeStatusMain {
                 }
                 let since = s.stateSince.map { StatusFormat.compactAge(since: $0) } ?? "?"
                 let host = TerminalFocus.hostApp(of: s.pid)?.bundleIdentifier ?? "-"
-                let bg = s.isBackground ? " bg=\(s.attachId ?? "?")" : ""
+                let bg = s.isBackground ? " bg=\(s.attachId ?? "?")" : (s.hubId.map { " hub=\($0)" } ?? "")
                 print("pid=\(s.pid) [\(state) for \(since)]\(bg) \(s.name ?? s.projectName) (\(s.gitBranch ?? "-")) \(s.cwd)")
                 print("    host=\(host) group=\(s.host.map { "\"\($0.label)\"" } ?? "-") title=\(s.title.map { "\"\($0)\"" } ?? "-")")
             }

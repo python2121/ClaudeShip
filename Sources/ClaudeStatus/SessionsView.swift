@@ -6,6 +6,7 @@ struct SessionsView: View {
     /// Row click: bring the session's terminal to the front. Injected by
     /// AppDelegate (which also closes the panel); no-op in previews/tests.
     var onFocusSession: (ClaudeSession) -> Void = { _ in }
+    var onEndSession: (ClaudeSession) -> Void = { _ in }
     @ViewState private var now: Date = Date()
     @ViewState private var hoveredPid: pid_t? = nil
 
@@ -72,7 +73,7 @@ struct SessionsView: View {
         let hosts = Self.grouped(store.sessions)
         // A background group is always headed, even alone: the header is what
         // tells the user there's no terminal to look for.
-        let headed = hosts.count > 1 || hosts.contains { $0.key == Self.backgroundKey }
+        let headed = hosts.count > 1 || hosts.contains { $0.key == Self.backgroundKey || $0.key == Self.virtualKey }
         return VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(hosts.enumerated()), id: \.element.key) { hostIndex, host in
                 if hostIndex > 0 { Divider() }
@@ -149,19 +150,23 @@ struct SessionsView: View {
         var windows: [WindowGroup]
     }
 
+    static let virtualKey = "~virtual"
     static let backgroundKey = "~background"
     static let otherKey = "~other"
 
-    /// Stable grouping: hosts by label, then "Background" (daemon-run
-    /// sessions with no terminal), then "Other" (hosts we couldn't resolve);
-    /// windows by label (unlabeled last); sessions inside keep the scanner's
-    /// (cwd, pid) order.
+    /// Stable grouping: hosts by label, then "Virtual" (sessions on the hub's
+    /// ptys — attachable from anywhere, owned by no window), then
+    /// "Background" (daemon-run sessions with no terminal), then "Other"
+    /// (hosts we couldn't resolve); windows by label (unlabeled last);
+    /// sessions inside keep the scanner's (cwd, pid) order.
     static func grouped(_ sessions: [ClaudeSession]) -> [HostGroup] {
         var hosts: [HostGroup] = []
         for session in sessions {
-            let hostKey = session.isBackground ? backgroundKey : (session.host?.bundleId ?? otherKey)
-            let hostLabel = session.isBackground ? "Background" : (session.host?.appName ?? "Other")
-            let windowLabel = session.host?.window
+            let hostKey = session.hubId != nil ? virtualKey
+                : session.isBackground ? backgroundKey : (session.host?.bundleId ?? otherKey)
+            let hostLabel = session.hubId != nil ? "Virtual"
+                : session.isBackground ? "Background" : (session.host?.appName ?? "Other")
+            let windowLabel = session.hubId != nil ? nil : session.host?.window
             let windowKey = windowLabel ?? "~none"
             let h: Int
             if let i = hosts.firstIndex(where: { $0.key == hostKey }) {
@@ -184,8 +189,9 @@ struct SessionsView: View {
         }
         func tier(_ key: String) -> Int {
             switch key {
-            case backgroundKey: return 1
-            case otherKey: return 2
+            case virtualKey: return 1
+            case backgroundKey: return 2
+            case otherKey: return 3
             default: return 0
             }
         }
@@ -216,7 +222,14 @@ struct SessionsView: View {
                 }
             }
             .onTapGesture { onFocusSession(session) }
-            .help(session.isBackground
+            // Right-click: end the session, the way the web app's End button
+            // does — a hang-up to the Claude process, escalating if ignored.
+            .contextMenu {
+                Button("End session") { onEndSession(session) }
+            }
+            .help(session.hubId != nil
+                  ? "Open a terminal window attached to this session"
+                  : session.isBackground
                   ? "Open a terminal attached to this background session"
                   : "Bring this session's terminal to the front")
     }

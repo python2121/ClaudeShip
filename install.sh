@@ -6,6 +6,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# A test hub's environment must never leak into the install: `open` hands
+# the launched app this shell's variables, and the hub started below reads
+# them too — either would then look at a throwaway hub directory.
+unset CLAUDEANDREW_HOME CLAUDEANDREW_CMD CLAUDEANDREW_WEB
+
 APP_NAME="ClaudeStatus"
 APP_BUNDLE="${APP_NAME}.app"
 DEST="/Applications/${APP_BUNDLE}"
@@ -82,6 +87,24 @@ fi
 if [[ "${SKIP_HOOK:-0}" != "1" ]]; then
   echo "==> registering Claude Code permission hook"
   "${DEST}/Contents/MacOS/${APP_NAME}" --install-hook
+fi
+
+# The session hub: put `claudeandrew` on PATH and make sure a hub is up, so
+# the web app answers. A hub that is already running is left alone — it owns
+# live sessions, and restarting it would end them; it keeps running the
+# previous build until `claudeandrew hub stop`. SKIP_HUB=1 opts out.
+if [[ "${SKIP_HUB:-0}" != "1" ]]; then
+  HUB_BIN="${DEST}/Contents/MacOS/claudeandrew"
+  mkdir -p "${HOME}/.local/bin"
+  ln -sf "${HUB_BIN}" "${HOME}/.local/bin/claudeandrew"
+  echo "==> linked ${HOME}/.local/bin/claudeandrew"
+  if "${HUB_BIN}" hub status >/dev/null 2>&1; then
+    echo "==> session hub already running (previous build until: claudeandrew hub stop)"
+  else
+    echo "==> starting session hub"
+  fi
+  "${HUB_BIN}" hub start || echo "WARNING: session hub did not start" >&2
+  echo "==> to open the web app in a browser (or on the phone): claudeandrew hub link"
 fi
 
 # Start it. Prefer the LaunchAgent if the user has set one up — that way

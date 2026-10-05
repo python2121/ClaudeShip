@@ -41,6 +41,17 @@ mkdir -p "${APP_DIR}/Contents/Resources"
 
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
+# The session hub and its terminal client are the same binary under another
+# name (App.main dispatches on argv[0]). A real copy rather than a symlink,
+# so the hub's process name is "claudeandrew" — install.sh restarts the
+# menubar app with `pkill -x ClaudeStatus`, which must never take the hub
+# (and every session it owns) down with it.
+HUB_NAME="claudeandrew"
+cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${HUB_NAME}"
+
+# The hub's web app: static files it serves from Resources/web.
+cp -R web "${APP_DIR}/Contents/Resources/web"
+
 cat >"${APP_DIR}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -79,10 +90,13 @@ PLIST
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 if [[ -n "${SIGN_IDENTITY}" ]] && security find-identity -p codesigning -v 2>/dev/null | grep -q "\"${SIGN_IDENTITY}\""; then
   echo "==> codesigning with identity: ${SIGN_IDENTITY}"
-  codesign --force --sign "${SIGN_IDENTITY}" --identifier "${BUNDLE_ID}" "${APP_DIR}"
+  SIGN_AS="${SIGN_IDENTITY}"
 else
   echo "==> codesigning ad-hoc (set SIGN_IDENTITY in .env for a stable identity)"
-  codesign --force --sign - --identifier "${BUNDLE_ID}" "${APP_DIR}"
+  SIGN_AS="-"
 fi
+# Nested code first: the bundle signature seals it.
+codesign --force --sign "${SIGN_AS}" --identifier "${BUNDLE_ID}.hub" "${APP_DIR}/Contents/MacOS/${HUB_NAME}"
+codesign --force --sign "${SIGN_AS}" --identifier "${BUNDLE_ID}" "${APP_DIR}"
 
 echo "==> done: $(pwd)/${APP_DIR}"

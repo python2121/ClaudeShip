@@ -76,7 +76,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildPanel() {
         hostingController = NSHostingController(rootView: SessionsView(
             store: store,
-            onFocusSession: { [weak self] session in self?.focusTerminal(for: session) }))
+            onFocusSession: { [weak self] session in self?.focusTerminal(for: session) },
+            onEndSession: { [weak self] session in self?.endSession(session) }))
         // Report the SwiftUI ideal size as preferredContentSize so we can size
         // the panel to the content (and resize-follow when it changes).
         hostingController.sizingOptions = [.preferredContentSize]
@@ -295,6 +296,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         focusQueue.async {
             let outcome = TerminalFocus.focus(session)
             NSLog("ClaudeStatus: focus %@ → %@", session.name ?? "\(session.pid)", String(describing: outcome))
+        }
+    }
+
+    /// End a session from the overlay's context menu. A hub session is
+    /// ended by the hub (SIGHUP to its supervisor, SIGKILL if that is
+    /// ignored — the same path as the web app's End button); any other
+    /// session gets the hang-up a closing terminal window would give it,
+    /// and a SIGKILL five seconds later if it is still there.
+    private func endSession(_ session: ClaudeSession) {
+        focusQueue.async {
+            if let hubId = session.hubId, HubCLI.endHubSession(hubId) {
+                NSLog("ClaudeStatus: asked the hub to end session %@", hubId)
+                return
+            }
+            let pid = session.pid
+            kill(pid, SIGHUP)
+            NSLog("ClaudeStatus: hung up pid %d", pid)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+                // Still alive and still the same Claude (its registry file
+                // would be gone otherwise)? Then it ignored the hang-up.
+                if SessionScanner.pidAlive(pid),
+                   FileManager.default.fileExists(atPath: SessionScanner.sessionsRoot.appendingPathComponent("\(pid).json").path) {
+                    kill(pid, SIGKILL)
+                }
+            }
         }
     }
 

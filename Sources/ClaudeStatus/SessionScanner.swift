@@ -61,6 +61,12 @@ struct ClaudeSession: Identifiable, Equatable {
     let stateSince: Date?
     /// Session launch time (`startedAt`).
     let startedAt: Date?
+    /// Set when the session runs on a pty the session hub owns (started by
+    /// `claudeandrew` or the web app): its hub id, what
+    /// `claudeandrew hub attach <id>` takes. Such a session has no terminal
+    /// window of its own to raise — any number of screens may be looking
+    /// at it — so clicking it opens a fresh terminal attached to it.
+    var hubId: String? = nil
 
     var id: pid_t { pid }
     var projectName: String { (cwd as NSString).lastPathComponent }
@@ -97,8 +103,10 @@ enum SessionScanner {
             at: sessionsRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
         ) else { return [] }
 
-        // VS Code window state is read once per scan, not once per session.
+        // VS Code window state and the hub's session list are read once per
+        // scan, not once per session.
         let windows = TerminalFocus.loadVSCodeWindows()
+        let hubSessions = HubCLI.liveSessions()
         var sessions: [ClaudeSession] = []
         for file in entries where file.pathExtension == "json" {
             // Registry files are named <pid>.json; anything else isn't ours.
@@ -108,7 +116,14 @@ enum SessionScanner {
             else { continue }
             // A file whose pid is dead is a leftover from a crash — skip it.
             guard pidAlive(entry.pid) else { continue }
-            sessions.append(session(for: entry, windows: windows))
+            var session = session(for: entry, windows: windows)
+            if !hubSessions.isEmpty {
+                // The hub's pid for a session is its supervisor, an ancestor of
+                // the Claude process.
+                let chain = TerminalFocus.ancestorPids(of: entry.pid)
+                session.hubId = hubSessions.first { chain.contains($0.pid) }?.id
+            }
+            sessions.append(session)
         }
         // Stable order so popover rows don't jump between polls.
         return sessions.sorted { ($0.cwd, $0.pid) < ($1.cwd, $1.pid) }
