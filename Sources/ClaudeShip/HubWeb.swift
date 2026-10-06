@@ -225,12 +225,12 @@ enum HubWebSecurity {
 }
 
 /// The pairing secret: a random token only this user can read. A browser
-/// presents it once (the link from `claudeandrew hub link`) and gets it
+/// presents it once (the link from `claudeship hub link`) and gets it
 /// back as a cookie. Network position alone is not a login — other users
 /// of this Mac, a sandboxed app, or anything forwarding a port can all
 /// reach 127.0.0.1.
 enum HubToken {
-    static let cookieName = "claude_hub"
+    static let cookieName = "claude_ship"
     static var path: String { HubPaths.home.appendingPathComponent("token").path }
 
     /// The existing token, or a newly minted one. nil only if the hub's
@@ -525,7 +525,7 @@ final class HubWebServer {
     /// when installed, the repo's `web/` when run from a build directory.
     static let assetRoot: URL? = {
         let fm = FileManager.default
-        if let override = ProcessInfo.processInfo.environment["CLAUDEANDREW_WEB"], !override.isEmpty {
+        if let override = ProcessInfo.processInfo.environment["CLAUDESHIP_WEB"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)
         }
         var size = UInt32(0)
@@ -668,7 +668,7 @@ final class HubWebConnection: HubAttachment {
                 .map { HubWebSecurity.constantTimeEquals($0, token) } ?? false
         } ?? false
 
-        // Pairing: the link from `claudeandrew hub link` carries the secret
+        // Pairing: the link from `claudeship hub link` carries the secret
         // once; from then on the browser holds it as a cookie.
         if request.method == "GET", request.path == "/auth" {
             guard let token = server.token, let offered = request.query["k"],

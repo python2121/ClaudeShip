@@ -62,8 +62,8 @@ struct ClaudeSession: Identifiable, Equatable {
     /// Session launch time (`startedAt`).
     let startedAt: Date?
     /// Set when the session runs on a pty the session hub owns (started by
-    /// `claudeandrew` or the web app): its hub id, what
-    /// `claudeandrew hub attach <id>` takes. Such a session has no terminal
+    /// `claudeship` or the web app): its hub id, what
+    /// `claudeship hub attach <id>` takes. Such a session has no terminal
     /// window of its own to raise — any number of screens may be looking
     /// at it — so clicking it opens a fresh terminal attached to it.
     var hubId: String? = nil

@@ -1,22 +1,22 @@
 import Darwin
 import Foundation
 
-/// Where the hub keeps its socket, lock, log, and config. `CLAUDEANDREW_HOME`
+/// Where the hub keeps its socket, lock, log, and config. `CLAUDESHIP_HOME`
 /// relocates all of it, so a test hub never touches the real one.
 enum HubPaths {
     static var home: URL {
-        if let override = ProcessInfo.processInfo.environment["CLAUDEANDREW_HOME"], !override.isEmpty {
+        if let override = ProcessInfo.processInfo.environment["CLAUDESHIP_HOME"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)
         }
         return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/ClaudeStatus/hub", isDirectory: true)
+            .appendingPathComponent("Library/Application Support/ClaudeShip/hub", isDirectory: true)
     }
     static var socket: String { home.appendingPathComponent("hub.sock").path }
     static var lock: String { home.appendingPathComponent("hub.lock").path }
     static var log: String { home.appendingPathComponent("hub.log").path }
     static var config: URL { home.appendingPathComponent("config.json") }
 
-    /// How to run this binary as the `claudeandrew` command: the installed
+    /// How to run this binary as the `claudeship` command: the installed
     /// copy answers to that name; a dev build needs `--cli`.
     static let selfCommand: [String]? = {
         var size = UInt32(0)

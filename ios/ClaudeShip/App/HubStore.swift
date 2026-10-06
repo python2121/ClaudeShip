@@ -52,7 +52,7 @@ final class HubStore {
         } catch {
             unpaired = false
             self.error = error.localizedDescription
-            NSLog("ClaudeHub: refresh failed: %@", "\(error)")
+            NSLog("ClaudeShip: refresh failed: %@", "\(error)")
         }
     }
 

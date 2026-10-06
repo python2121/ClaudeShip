@@ -17,7 +17,7 @@ struct PairView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Pair with the hub on your Mac")
                             .font(.title3.weight(.semibold))
-                        Text("In a terminal on the Mac, run **claudeandrew hub link**. It prints a link and shows a QR code. Scan the code, or paste the link below.")
+                        Text("In a terminal on the Mac, run **claudeship hub link**. It prints a link and shows a QR code. Scan the code, or paste the link below.")
                             .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 4)
@@ -55,7 +55,7 @@ struct PairView: View {
                     }
                 }
             }
-            .navigationTitle("Claude Hub")
+            .navigationTitle("Claude Ship")
             .sheet(isPresented: $scanning) {
                 QRScannerSheet { code in
                     scanning = false
@@ -83,7 +83,7 @@ struct PairView: View {
             store.setActive(true)
         } catch {
             problem = (error as? HubError) == .unpaired
-                ? "The hub didn't accept that link. Run claudeandrew hub link again for a current one."
+                ? "The hub didn't accept that link. Run claudeship hub link again for a current one."
                 : error.localizedDescription
         }
     }

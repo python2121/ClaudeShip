@@ -53,13 +53,13 @@ enum PermissionHook {
 }
 
 /// Installs/removes the PermissionRequest hook entry in ~/.claude/settings.json
-/// (dispatched via `ClaudeStatus --install-hook` / `--uninstall-hook`). The
+/// (dispatched via `ClaudeShip --install-hook` / `--uninstall-hook`). The
 /// merge is additive and surgical: it only touches the one hook entry whose
 /// command contains our marker, and leaves everything else in the file as-is.
 enum HookInstaller {
     /// Canonical installed-app path, not the invoking binary's — hooks must
     /// keep working after dev builds come and go.
-    static let hookCommand = "/Applications/ClaudeStatus.app/Contents/MacOS/ClaudeStatus --permission-hook"
+    static let hookCommand = "/Applications/ClaudeShip.app/Contents/MacOS/ClaudeShip --permission-hook"
     static let commandMarker = "--permission-hook"
     /// Seconds Claude Code waits before killing the hook. The helper blocks
     /// as long as the prompt is unanswered (by design — the terminal prompt
@@ -84,7 +84,7 @@ enum HookInstaller {
         var root: [String: Any] = [:]
         if let data = try? Data(contentsOf: url) {
             guard let existing = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw NSError(domain: "ClaudeStatus", code: 1, userInfo: [
+                throw NSError(domain: "ClaudeShip", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "\(settingsPath) is not a JSON object — won't touch it"])
             }
             root = existing
@@ -97,12 +97,29 @@ enum HookInstaller {
     }
 
     /// Pure merge, split out for tests. Adds our hook entry unless a command
-    /// carrying the marker is already registered.
+    /// carrying the marker is already registered — and if the registered
+    /// one points somewhere else (the app's path changed), repoints it.
     static func merged(_ root: [String: Any]) -> ([String: Any], changed: Bool) {
         var root = root
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         var matchers = hooks["PermissionRequest"] as? [[String: Any]] ?? []
-        guard !containsOurHook(matchers) else { return (root, false) }
+        if containsOurHook(matchers) {
+            var repointed = false
+            for m in matchers.indices {
+                var entries = matchers[m]["hooks"] as? [[String: Any]] ?? []
+                for e in entries.indices {
+                    guard let command = entries[e]["command"] as? String, command.contains(commandMarker),
+                          command != hookCommand else { continue }
+                    entries[e]["command"] = hookCommand
+                    repointed = true
+                }
+                matchers[m]["hooks"] = entries
+            }
+            guard repointed else { return (root, false) }
+            hooks["PermissionRequest"] = matchers
+            root["hooks"] = hooks
+            return (root, true)
+        }
         matchers.append([
             "hooks": [["type": "command", "command": hookCommand, "timeout": hookTimeout]]
         ])

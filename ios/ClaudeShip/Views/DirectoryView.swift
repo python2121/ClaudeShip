@@ -29,7 +29,7 @@ struct DirectoryView: View {
             if let state = store.state {
                 if state.protocol != HubState.protocolVersion {
                     Section {
-                        Text("The hub on the Mac is a different build than this app. Restart it when its sessions can end: claudeandrew hub stop, then claudeandrew hub start.")
+                        Text("The hub on the Mac is a different build than this app. Restart it when its sessions can end: claudeship hub stop, then claudeship hub start.")
                             .font(.footnote).foregroundStyle(Palette.orange)
                     }
                 }
@@ -38,7 +38,7 @@ struct DirectoryView: View {
                 let rest = visible.filter { $0.sessions.isEmpty }
                 if running.isEmpty && filter.isEmpty {
                     Section("Running") {
-                        Text("Nothing is running. Start a session below, or run claudeandrew in a terminal on the Mac.")
+                        Text("Nothing is running. Start a session below, or run claudeship in a terminal on the Mac.")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -82,7 +82,7 @@ struct DirectoryView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle("Claude Hub")
+        .navigationTitle("Claude Ship")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $filter, prompt: "Filter projects")
         .refreshable { await store.refresh() }

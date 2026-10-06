@@ -16,9 +16,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "A0000000000000000000A005"
-               BuildableName = "ClaudeHub.app"
-               BlueprintName = "ClaudeHub"
-               ReferencedContainer = "container:ClaudeHub.xcodeproj">
+               BuildableName = "ClaudeShip.app"
+               BlueprintName = "ClaudeShip"
+               ReferencedContainer = "container:ClaudeShip.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -47,9 +47,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "A0000000000000000000A005"
-            BuildableName = "ClaudeHub.app"
-            BlueprintName = "ClaudeHub"
-            ReferencedContainer = "container:ClaudeHub.xcodeproj">
+            BuildableName = "ClaudeShip.app"
+            BlueprintName = "ClaudeShip"
+            ReferencedContainer = "container:ClaudeShip.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -64,9 +64,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "A0000000000000000000A005"
-            BuildableName = "ClaudeHub.app"
-            BlueprintName = "ClaudeHub"
-            ReferencedContainer = "container:ClaudeHub.xcodeproj">
+            BuildableName = "ClaudeShip.app"
+            BlueprintName = "ClaudeShip"
+            ReferencedContainer = "container:ClaudeShip.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

@@ -38,7 +38,7 @@ struct SettingsView: View {
                 Section {
                     Button("Unpair this phone", role: .destructive) { confirmUnpair = true }
                 } footer: {
-                    Text("Forgets the pairing on this phone only. To unpair every browser and phone at once, run claudeandrew hub unlink on the Mac.")
+                    Text("Forgets the pairing on this phone only. To unpair every browser and phone at once, run claudeship hub unlink on the Mac.")
                 }
             }
             .navigationTitle("Settings")

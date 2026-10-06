@@ -9,18 +9,40 @@ cd "$(dirname "$0")"
 # A test hub's environment must never leak into the install: `open` hands
 # the launched app this shell's variables, and the hub started below reads
 # them too — either would then look at a throwaway hub directory.
-unset CLAUDEANDREW_HOME CLAUDEANDREW_CMD CLAUDEANDREW_WEB
+unset CLAUDESHIP_HOME CLAUDESHIP_CMD CLAUDESHIP_WEB
 
-APP_NAME="ClaudeStatus"
+APP_NAME="ClaudeShip"
 APP_BUNDLE="${APP_NAME}.app"
 DEST="/Applications/${APP_BUNDLE}"
-LABEL="com.andrewnowicki.claudestatus"
+LABEL="com.andrewnowicki.claudeship"
 PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 UID_NUM="$(id -u)"
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   ./build-app.sh
 fi
+
+# One-time move from the app's former name (ClaudeStatus): its settings,
+# the hub's socket/token/config, and the VS Code bridge files all live in
+# the Application Support folder, which simply moves. A hub that is still
+# running keeps answering at the moved socket path, so its sessions
+# survive; new sessions need it restarted (noted at the end).
+OLD_SUPPORT="${HOME}/Library/Application Support/ClaudeStatus"
+NEW_SUPPORT="${HOME}/Library/Application Support/${APP_NAME}"
+if [[ -d "${OLD_SUPPORT}" && ! -d "${NEW_SUPPORT}" ]]; then
+  echo "==> moving Application Support/ClaudeStatus → ${APP_NAME}"
+  mv "${OLD_SUPPORT}" "${NEW_SUPPORT}"
+fi
+if launchctl print "gui/${UID_NUM}/com.andrewnowicki.claudestatus" >/dev/null 2>&1; then
+  launchctl bootout "gui/${UID_NUM}/com.andrewnowicki.claudestatus" 2>/dev/null || true
+fi
+if pgrep -x ClaudeStatus >/dev/null 2>&1; then
+  echo "==> stopping the old ClaudeStatus menubar app"
+  pkill -x ClaudeStatus || true
+  sleep 0.5
+fi
+rm -rf "/Applications/ClaudeStatus.app"
+rm -f "${HOME}/.local/bin/claudeandrew"
 
 if [[ ! -d "${APP_BUNDLE}" ]]; then
   echo "ERROR: ${APP_BUNDLE} not built — run ./build-app.sh first" >&2
@@ -83,28 +105,33 @@ fi
 # Register the PermissionRequest hook in ~/.claude/settings.json so approvals
 # can be answered from the app. Idempotent (only touches its own marked
 # entry, prints "Nothing to do" when already present). SKIP_HOOK=1 to opt
-# out; remove later with: ClaudeStatus --uninstall-hook
+# out; remove later with: ClaudeShip --uninstall-hook
 if [[ "${SKIP_HOOK:-0}" != "1" ]]; then
   echo "==> registering Claude Code permission hook"
   "${DEST}/Contents/MacOS/${APP_NAME}" --install-hook
 fi
 
-# The session hub: put `claudeandrew` on PATH and make sure a hub is up, so
+# The session hub: put `claudeship` on PATH and make sure a hub is up, so
 # the web app answers. A hub that is already running is left alone — it owns
 # live sessions, and restarting it would end them; it keeps running the
-# previous build until `claudeandrew hub stop`. SKIP_HUB=1 opts out.
+# previous build until `claudeship hub stop`. SKIP_HUB=1 opts out.
 if [[ "${SKIP_HUB:-0}" != "1" ]]; then
-  HUB_BIN="${DEST}/Contents/MacOS/claudeandrew"
+  HUB_BIN="${DEST}/Contents/MacOS/claudeship"
   mkdir -p "${HOME}/.local/bin"
-  ln -sf "${HUB_BIN}" "${HOME}/.local/bin/claudeandrew"
-  echo "==> linked ${HOME}/.local/bin/claudeandrew"
+  ln -sf "${HUB_BIN}" "${HOME}/.local/bin/claudeship"
+  echo "==> linked ${HOME}/.local/bin/claudeship"
   if "${HUB_BIN}" hub status >/dev/null 2>&1; then
-    echo "==> session hub already running (previous build until: claudeandrew hub stop)"
+    echo "==> session hub already running (previous build until: claudeship hub stop)"
   else
     echo "==> starting session hub"
   fi
   "${HUB_BIN}" hub start || echo "WARNING: session hub did not start" >&2
-  echo "==> to open the web app in a browser (or on the phone): claudeandrew hub link"
+  echo "==> to open the web app in a browser (or on the phone): claudeship hub link"
+  if pgrep -f "ClaudeStatus.app/Contents/MacOS/claudeandrew hub run" >/dev/null 2>&1; then
+    echo "NOTE: the running hub is the old ClaudeStatus build, whose bundle is now gone;"
+    echo "      its current sessions keep working, but new ones will fail to start until"
+    echo "      you restart it (ends those sessions): claudeship hub stop && claudeship hub start"
+  fi
 fi
 
 # Start it. Prefer the LaunchAgent if the user has set one up — that way

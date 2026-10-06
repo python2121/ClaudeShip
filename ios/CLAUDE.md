@@ -6,8 +6,8 @@ only the phone's shell over the same hub API.
 
 ## What this is
 
-`ClaudeHub` is a SwiftUI iPhone app — a hand-written Xcode project
-(`ClaudeHub.xcodeproj`, synchronized root folder, so adding a file needs no
+`ClaudeShip` is a SwiftUI iPhone app — a hand-written Xcode project
+(`ClaudeShip.xcodeproj`, synchronized root folder, so adding a file needs no
 project edit) that does what the web app does, natively: the project
 directory with live sessions, launch/resume in a chosen permission mode,
 settings, and a terminal attached to a session over the hub's WebSocket.
@@ -25,7 +25,7 @@ the Mac app's `@ViewState` rule does not apply.
 ```bash
 ./build.sh                 # simulator build (CODE_SIGNING_ALLOWED=NO)
 ./build.sh run             # …then install + launch on the booted simulator
-open ClaudeHub.xcodeproj   # device install: Run with the team under Signing
+open ClaudeShip.xcodeproj   # device install: Run with the team under Signing
 swift ios/make-icon.swift  # from the repo root: regenerate the app icon
 ```
 
@@ -37,11 +37,11 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
 - `App/HubConnection.swift` holds the hub's base URL (UserDefaults) and the
   pairing token (Keychain; an unsigned simulator build has no keychain —
   `errSecMissingEntitlement` — and falls back to UserDefaults, see
-  `Keychain.swift`). Every request carries `Cookie: claude_hub=<token>`,
+  `Keychain.swift`). Every request carries `Cookie: claude_ship=<token>`,
   so the hub treats the phone exactly like a paired browser. No cookie
   jar: `httpShouldSetCookies = false`.
-- Pairing = the link `claudeandrew hub link` prints: scanned (AVFoundation
-  QR, `QRScannerSheet`), pasted, or `claudehub://pair?link=<url-encoded>`.
+- Pairing = the link `claudeship hub link` prints: scanned (AVFoundation
+  QR, `QRScannerSheet`), pasted, or `claudeship://pair?link=<url-encoded>`.
   `HubConnection.parse(link:)` takes the host/port and `k=`.
 - `App/HubAPI.swift` mirrors `/api/state`, `/api/launch`, `/api/kill`,
   `/api/settings` (models decode the JSON `HubState.build` produces; keep

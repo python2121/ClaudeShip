@@ -17,7 +17,7 @@ struct HubSessionSnapshot {
 /// project's recent conversations. Blocking (directory listings, transcript
 /// tails) — call only on `HubState.queue`, which also guards the cache.
 enum HubState {
-    static let queue = DispatchQueue(label: "claudestatus.hub.state")
+    static let queue = DispatchQueue(label: "claudeship.hub.state")
 
     /// Transcript path → the title read from it at a given mtime, so an
     /// unchanged transcript is never tail-read twice.

@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct ClaudeHubApp: App {
+struct ClaudeShipApp: App {
     @State private var connection = HubConnection()
     @State private var store: HubStore
     @Environment(\.scenePhase) private var scenePhase

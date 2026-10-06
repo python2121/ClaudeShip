@@ -13,17 +13,17 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.python21.ClaudeHub</string>
+			<string>com.python21.ClaudeShip</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>claudehub</string>
+				<string>claudeship</string>
 			</array>
 		</dict>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Claude Hub talks to the session hub on your Mac over your Tailscale network.</string>
-	<!-- Pairing: the QR code `claudeandrew hub link` prints on the Mac. -->
+	<string>Claude Ship talks to the session hub on your Mac over your Tailscale network.</string>
+	<!-- Pairing: the QR code `claudeship hub link` prints on the Mac. -->
 	<key>NSCameraUsageDescription</key>
-	<string>Claude Hub scans the pairing QR code shown on your Mac.</string>
+	<string>Claude Ship scans the pairing QR code shown on your Mac.</string>
 </dict>
 </plist>

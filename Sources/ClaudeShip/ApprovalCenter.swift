@@ -110,7 +110,7 @@ enum ApprovalWire {
         if allow {
             return #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#
         }
-        return #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied via Claude Status"}}}"#
+        return #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied via Claude Ship"}}}"#
     }
 }
 
@@ -258,7 +258,7 @@ enum ApprovalSocket {
     /// this lives in App Support, not some deep sandboxed temp dir.
     static var defaultPath: String {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/ClaudeStatus/approvals.sock")
+            .appendingPathComponent("Library/Application Support/ClaudeShip/approvals.sock")
             .path
     }
 

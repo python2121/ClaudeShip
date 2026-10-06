@@ -6,7 +6,7 @@ import Foundation
 /// the phone exactly like the web app.
 @Observable
 final class HubConnection {
-    static let cookieName = "claude_hub"
+    static let cookieName = "claude_ship"
     private static let urlKey = "hubURL"
     private static let tokenAccount = "token"
 
@@ -37,7 +37,7 @@ final class HubConnection {
         return url.port.map { "\(host):\($0)" } ?? host
     }
 
-    /// The pairing link from `claudeandrew hub link`, or the bare token.
+    /// The pairing link from `claudeship hub link`, or the bare token.
     /// Returns the hub's base URL and the token.
     static func parse(link: String) -> (URL, String)? {
         let text = link.trimmingCharacters(in: .whitespacesAndNewlines)

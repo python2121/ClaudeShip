@@ -1,4 +1,4 @@
-// Claude Hub web app: the project directory and the browser terminal.
+// Claude Ship web app: the project directory and the browser terminal.
 // Plain JS, no build step. Everything shown comes from /api/state (polled)
 // and is put on the page with textContent/DOM nodes — never innerHTML —
 // because conversation titles and paths are text the page does not control.
@@ -136,7 +136,7 @@
   const bannerEl = h('div');
   const pairEl = h('div', { class: 'empty pairing' },
     h('h3', null, "This browser isn't paired with the hub yet"),
-    h('p', null, 'On the Mac, run ', h('code', null, 'claudeandrew hub link'),
+    h('p', null, 'On the Mac, run ', h('code', null, 'claudeship hub link'),
       ' and open the link it prints in this browser — or scan the QR code it shows with this phone.'),
     h('form', {
       class: 'pair-form',
@@ -171,7 +171,7 @@
       h('div', { class: 'top-inner' },
         h('div', { class: 'brand' },
           h('img', { class: 'brand-mark', src: '/icon.svg', alt: '' }),
-          h('span', { class: 'brand-name' }, 'Claude Hub'),
+          h('span', { class: 'brand-name' }, 'Claude Ship'),
           hostEl),
         tallyEl,
         h('div', { class: 'tools' }, searchEl, settingsEl))),
@@ -308,8 +308,8 @@
       ui.error && h('div', { class: 'banner' }, ui.error),
       data && data.protocol !== PROTOCOL && h('div', { class: 'banner' },
         'The hub on the Mac is running a different build than this page, so some things may not work. ',
-        'Restart it when its sessions can end: ', h('code', null, 'claudeandrew hub stop'), ', then ',
-        h('code', null, 'claudeandrew hub start'), '.'),
+        'Restart it when its sessions can end: ', h('code', null, 'claudeship hub stop'), ', then ',
+        h('code', null, 'claudeship hub start'), '.'),
     ];
     if (!data) {
       // No state to show: don't leave the last one's header standing.
@@ -326,7 +326,7 @@
     const all = data.projects.flatMap((p) => p.sessions).concat(data.elsewhere);
     const waiting = all.filter((s) => s.status === 'waiting').length;
     const busy = all.filter((s) => s.status === 'busy').length;
-    if (!terminal) document.title = `${waiting ? `(${waiting}) ` : ''}Claude Hub — ${data.host}`;
+    if (!terminal) document.title = `${waiting ? `(${waiting}) ` : ''}Claude Ship — ${data.host}`;
     hostEl.textContent = data.host;
     tallyEl.replaceChildren(
       waiting ? h('span', { class: 'pill waiting' }, h('span', { class: 'glyph waiting' }), `${waiting} need${waiting === 1 ? 's' : ''} you`) : '',
@@ -347,7 +347,7 @@
         active.length
           ? h('div', { class: 'cards' }, active.map((p) => card(p, data)))
           : h('div', { class: 'empty' },
-              'Nothing is running. Start a session below, or run ', h('code', null, 'claudeandrew'),
+              'Nothing is running. Start a session below, or run ', h('code', null, 'claudeship'),
               ' in a terminal on the Mac.')));
     }
     // Sessions running outside the projects folder: shown while they run,
@@ -426,7 +426,7 @@
     }
     const why = session.background
       ? 'A background session run by Claude Code itself.'
-      : 'Started directly in a terminal, so it can only be used there. Sessions started here or with claudeandrew can be opened from anywhere.';
+      : 'Started directly in a terminal, so it can only be used there. Sessions started here or with claudeship can be opened from anywhere.';
     return h('div', { class: 'session external', title: why }, body,
       h('span', { class: 'session-go' }, session.background ? 'Background' : 'Terminal only'));
   }
@@ -921,7 +921,7 @@
     t.state.className = `term-state ${found.status}`;
     t.state.replaceChildren(STATUS[found.status] || found.status,
       found.since ? h('span', { class: 'long' }, ` · ${age(found.since)}`) : '');
-    document.title = `${found.status === 'waiting' ? '(!) ' : ''}${found.title || t.project.textContent} — Claude Hub`;
+    document.title = `${found.status === 'waiting' ? '(!) ' : ''}${found.title || t.project.textContent} — Claude Ship`;
   }
 
   window.addEventListener('online', () => reviveTerminal());

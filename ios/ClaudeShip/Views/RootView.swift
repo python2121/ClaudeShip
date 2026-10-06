@@ -32,10 +32,10 @@ struct RootView: View {
                 path = [id]
             }
         }
-        // claudehub://pair?link=<pairing link>  — pairing from anywhere a
-        // link can be tapped; claudehub://session?id=<hub id> opens one.
+        // claudeship://pair?link=<pairing link>  — pairing from anywhere a
+        // link can be tapped; claudeship://session?id=<hub id> opens one.
         .onOpenURL { url in
-            guard url.scheme == "claudehub", let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+            guard url.scheme == "claudeship", let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
             let query = Dictionary((components.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
             switch url.host {
             case "pair":

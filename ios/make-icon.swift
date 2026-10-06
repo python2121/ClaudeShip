@@ -13,7 +13,7 @@ import UniformTypeIdentifiers
 let size = 1024
 let out = URL(fileURLWithPath: CommandLine.arguments.count > 1
     ? CommandLine.arguments[1]
-    : "ios/ClaudeHub/Assets.xcassets/AppIcon.appiconset/AppIcon.png")
+    : "ios/ClaudeShip/Assets.xcassets/AppIcon.appiconset/AppIcon.png")
 
 let space = CGColorSpace(name: CGColorSpace.sRGB)!
 let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,

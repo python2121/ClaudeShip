@@ -284,7 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Click-to-focus
 
-    private let focusQueue = DispatchQueue(label: "com.andrewnowicki.claudestatus.terminal-focus")
+    private let focusQueue = DispatchQueue(label: "com.andrewnowicki.claudeship.terminal-focus")
 
     /// Row click: hide the overlay first (a popUpMenu-level floating panel
     /// would otherwise sit over the terminal we're about to raise), then
@@ -295,7 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         closePanel()
         focusQueue.async {
             let outcome = TerminalFocus.focus(session)
-            NSLog("ClaudeStatus: focus %@ → %@", session.name ?? "\(session.pid)", String(describing: outcome))
+            NSLog("ClaudeShip: focus %@ → %@", session.name ?? "\(session.pid)", String(describing: outcome))
         }
     }
 
@@ -307,12 +307,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func endSession(_ session: ClaudeSession) {
         focusQueue.async {
             if let hubId = session.hubId, HubCLI.endHubSession(hubId) {
-                NSLog("ClaudeStatus: asked the hub to end session %@", hubId)
+                NSLog("ClaudeShip: asked the hub to end session %@", hubId)
                 return
             }
             let pid = session.pid
             kill(pid, SIGHUP)
-            NSLog("ClaudeStatus: hung up pid %d", pid)
+            NSLog("ClaudeShip: hung up pid %d", pid)
             DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
                 // Still alive and still the same Claude (its registry file
                 // would be gone otherwise)? Then it ignored the hang-up.

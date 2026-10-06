@@ -1,14 +1,14 @@
 import AppKit
 
 @main
-struct ClaudeStatusMain {
+struct ClaudeShipMain {
     // Held in a static so NSApplication's weak `delegate` reference doesn't
     // free it.
     private static let appDelegate = AppDelegate()
 
     static func main() {
         // The session hub and its terminal client share this binary. The
-        // installed copy is invoked as `claudeandrew`, where every argument
+        // installed copy is invoked as `claudeship`, where every argument
         // belongs to claude — so this dispatch comes before any flag
         // checks. A dev build reaches the same code with `--cli`.
         let arguments = CommandLine.arguments
@@ -68,7 +68,7 @@ struct ClaudeStatusMain {
         // and every app it saw on the way — for debugging new emulators.
         if let i = CommandLine.arguments.firstIndex(of: "--host") {
             guard i + 1 < CommandLine.arguments.count, let pid = Int32(CommandLine.arguments[i + 1]) else {
-                FileHandle.standardError.write(Data("usage: ClaudeStatus --host <pid>\n".utf8))
+                FileHandle.standardError.write(Data("usage: ClaudeShip --host <pid>\n".utf8))
                 exit(2)
             }
             var current = pid
@@ -87,7 +87,7 @@ struct ClaudeStatusMain {
         // prints the outcome — exercises the adapter path without the GUI.
         if let i = CommandLine.arguments.firstIndex(of: "--focus") {
             guard i + 1 < CommandLine.arguments.count, let pid = Int32(CommandLine.arguments[i + 1]) else {
-                FileHandle.standardError.write(Data("usage: ClaudeStatus --focus <pid>\n".utf8))
+                FileHandle.standardError.write(Data("usage: ClaudeShip --focus <pid>\n".utf8))
                 exit(2)
             }
             // Any pid works: a non-session pid gets a bare record (no cwd/title),
@@ -107,7 +107,7 @@ struct ClaudeStatusMain {
         // status item.
         guard SingleInstance.acquire() else {
             FileHandle.standardError.write(
-                Data("ClaudeStatus: another instance is already running; exiting.\n".utf8))
+                Data("ClaudeShip: another instance is already running; exiting.\n".utf8))
             exit(0)
         }
 

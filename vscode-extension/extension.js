@@ -1,6 +1,6 @@
-// Claude Status ⇄ VS Code bridge.
+// Claude Ship ⇄ VS Code bridge.
 //
-// VS Code has no scripting interface for terminals, so the Claude Status
+// VS Code has no scripting interface for terminals, so the Claude Ship
 // menubar app can't select an integrated-terminal tab on its own. This
 // extension is the missing half: when a session row is clicked, the app drops
 // a request file; every VS Code window runs this extension and watches that
@@ -29,7 +29,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const DIR = path.join(os.homedir(), 'Library', 'Application Support', 'ClaudeStatus', 'vscode-focus');
+const DIR = path.join(os.homedir(), 'Library', 'Application Support', 'ClaudeShip', 'vscode-focus');
 const REQUEST = path.join(DIR, 'request.json');
 const REPLY = path.join(DIR, 'reply.json');
 const WINDOWS_DIR = path.join(DIR, 'windows');

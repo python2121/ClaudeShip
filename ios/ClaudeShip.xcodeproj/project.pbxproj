@@ -11,26 +11,26 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		A0000000000000000000A004 /* ClaudeHub.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClaudeHub.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A0000000000000000000A004 /* ClaudeShip.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClaudeShip.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		A0000000000000000000A00A /* Exceptions for "ClaudeHub" folder in "ClaudeHub" target */ = {
+		A0000000000000000000A00A /* Exceptions for "ClaudeShip" folder in "ClaudeShip" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
-			target = A0000000000000000000A005 /* ClaudeHub */;
+			target = A0000000000000000000A005 /* ClaudeShip */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		A0000000000000000000A009 /* ClaudeHub */ = {
+		A0000000000000000000A009 /* ClaudeShip */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				A0000000000000000000A00A /* Exceptions for "ClaudeHub" folder in "ClaudeHub" target */,
+				A0000000000000000000A00A /* Exceptions for "ClaudeShip" folder in "ClaudeShip" target */,
 			);
-			path = ClaudeHub;
+			path = ClaudeShip;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -50,7 +50,7 @@
 		A0000000000000000000A002 = {
 			isa = PBXGroup;
 			children = (
-				A0000000000000000000A009 /* ClaudeHub */,
+				A0000000000000000000A009 /* ClaudeShip */,
 				A0000000000000000000A003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -58,7 +58,7 @@
 		A0000000000000000000A003 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				A0000000000000000000A004 /* ClaudeHub.app */,
+				A0000000000000000000A004 /* ClaudeShip.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -66,9 +66,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A0000000000000000000A005 /* ClaudeHub */ = {
+		A0000000000000000000A005 /* ClaudeShip */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A0000000000000000000A011 /* Build configuration list for PBXNativeTarget "ClaudeHub" */;
+			buildConfigurationList = A0000000000000000000A011 /* Build configuration list for PBXNativeTarget "ClaudeShip" */;
 			buildPhases = (
 				A0000000000000000000A006 /* Sources */,
 				A0000000000000000000A007 /* Frameworks */,
@@ -79,14 +79,14 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				A0000000000000000000A009 /* ClaudeHub */,
+				A0000000000000000000A009 /* ClaudeShip */,
 			);
-			name = ClaudeHub;
+			name = ClaudeShip;
 			packageProductDependencies = (
 				A0000000000000000000A00C /* SwiftTerm */,
 			);
-			productName = ClaudeHub;
-			productReference = A0000000000000000000A004 /* ClaudeHub.app */;
+			productName = ClaudeShip;
+			productReference = A0000000000000000000A004 /* ClaudeShip.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -104,7 +104,7 @@
 					};
 				};
 			};
-			buildConfigurationList = A0000000000000000000A00E /* Build configuration list for PBXProject "ClaudeHub" */;
+			buildConfigurationList = A0000000000000000000A00E /* Build configuration list for PBXProject "ClaudeShip" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -121,7 +121,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A0000000000000000000A005 /* ClaudeHub */,
+				A0000000000000000000A005 /* ClaudeShip */,
 			);
 		};
 /* End PBXProject section */
@@ -216,8 +216,8 @@
 				DEVELOPMENT_TEAM = 6765QU5JTY;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = ClaudeHub/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Claude Hub";
+				INFOPLIST_FILE = ClaudeShip/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Claude Ship";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -228,7 +228,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.python21.ClaudeHub;
+				PRODUCT_BUNDLE_IDENTIFIER = com.python21.ClaudeShip;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -246,8 +246,8 @@
 				DEVELOPMENT_TEAM = 6765QU5JTY;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = ClaudeHub/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Claude Hub";
+				INFOPLIST_FILE = ClaudeShip/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Claude Ship";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -258,7 +258,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.python21.ClaudeHub;
+				PRODUCT_BUNDLE_IDENTIFIER = com.python21.ClaudeShip;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -269,7 +269,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		A0000000000000000000A00E /* Build configuration list for PBXProject "ClaudeHub" */ = {
+		A0000000000000000000A00E /* Build configuration list for PBXProject "ClaudeShip" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A0000000000000000000A00F /* Debug */,
@@ -278,7 +278,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A0000000000000000000A011 /* Build configuration list for PBXNativeTarget "ClaudeHub" */ = {
+		A0000000000000000000A011 /* Build configuration list for PBXNativeTarget "ClaudeShip" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A0000000000000000000A012 /* Debug */,

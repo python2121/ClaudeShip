@@ -3,7 +3,7 @@ import Foundation
 
 /// Hand-rolled test harness — this machine has no XCTest/swift-testing (CLT
 /// toolchain only), and we don't want the dependency anyway. Dispatched from
-/// App.main via `ClaudeStatus --self-test`, before NSApplication exists, so
+/// App.main via `ClaudeShip --self-test`, before NSApplication exists, so
 /// it runs headless and exits with 0/1. Covers the pure logic: registry
 /// parsing, status mapping, cwd→project-dir flattening, transcript tail
 /// parsing, menubar label, and duration formatting.
@@ -225,7 +225,7 @@ enum SelfTest {
 
         // MARK: approval server ↔ helper socket round-trip
 
-        let sockPath = NSTemporaryDirectory() + "claudestatus-test-\(getpid()).sock"
+        let sockPath = NSTemporaryDirectory() + "claudeship-test-\(getpid()).sock"
         let server = ApprovalServer(path: sockPath)
         let gotRequest = DispatchSemaphore(value: 0)
         var requestedId: UUID?
@@ -410,7 +410,7 @@ enum SelfTest {
         t.expectEqual(withHub.map(\.label), ["Ghostty", "Virtual", "Background", "Other"], "grouping: Virtual between hosts and Background")
         t.expectEqual(withHub[1].key, SessionsView.virtualKey, "grouping: virtual key")
         t.expectEqual(TerminalFocus.hubAttachCommand(cwd: "/Users/x/my proj", hubId: "ab12cd"),
-                      "cd '/Users/x/my proj' && claudeandrew hub attach 'ab12cd'", "hub attach: command typed into the new shell")
+                      "cd '/Users/x/my proj' && claudeship hub attach 'ab12cd'", "hub attach: command typed into the new shell")
 
         t.expectEqual(fakeSession(1, cwd: "/", host: nil, background: true, jobId: "j").attachId, "j", "attachId: jobId wins")
         t.expectEqual(fakeSession(1, cwd: "/", host: nil, background: true, sessionId: "a34398c4-12a2-4b54-aaac-edc6a5e935a6").attachId, "a34398c4", "attachId: falls back to sessionId prefix")
@@ -479,6 +479,18 @@ enum SelfTest {
         let start = Date(timeIntervalSince1970: 0)
         t.expectEqual(StatusFormat.compactDuration(from: start, to: start.addingTimeInterval(59)), "0m", "duration: sub-minute")
         t.expectEqual(StatusFormat.compactDuration(from: start, to: start.addingTimeInterval(9240)), "2h 34m", "duration: hours")
+
+        // MARK: hook installer — repointing after a rename
+        let staleHook: [String: Any] = ["hooks": ["PermissionRequest": [
+            ["hooks": [["type": "command", "command": "/Applications/Old.app/Contents/MacOS/Old --permission-hook", "timeout": 1]]],
+        ]]]
+        let (repointed, repointChanged) = HookInstaller.merged(staleHook)
+        t.expectEqual(repointChanged, true, "hook: a stale command path is repointed")
+        let repointedMatchers = (repointed["hooks"] as? [String: Any])?["PermissionRequest"] as? [[String: Any]]
+        let repointedEntries = repointedMatchers?.first?["hooks"] as? [[String: Any]]
+        let repointedCommand = repointedEntries?.first?["command"] as? String
+        t.expectEqual(repointedCommand, HookInstaller.hookCommand, "hook: repointed to the installed app")
+        t.expectEqual(HookInstaller.merged(repointed).changed, false, "hook: nothing to do once current")
 
         // MARK: hub — wire framing
 
@@ -690,7 +702,7 @@ enum SelfTest {
         t.expectEqual(HubState.branch(fromHEAD: "ref: refs/heads/feature/x\n"), "feature/x", "branch: symbolic ref")
         t.expectEqual(HubState.branch(fromHEAD: "9dfe4f7a1b2c3d4e5f60718293a4b5c6d7e8f901\n"), "9dfe4f7", "branch: detached head")
         t.expectNil(HubState.branch(fromHEAD: "gitdir: ../x"), "branch: not a HEAD file")
-        let tmpRoot = NSTemporaryDirectory() + "claudestatus-selftest-\(getpid())"
+        let tmpRoot = NSTemporaryDirectory() + "claudeship-selftest-\(getpid())"
         try? FileManager.default.createDirectory(atPath: tmpRoot + "/proj/inner", withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: tmpRoot + "/.hidden", withIntermediateDirectories: true)
         let canonicalRoot = URL(fileURLWithPath: tmpRoot).standardizedFileURL.path
@@ -777,9 +789,9 @@ enum SelfTest {
         t.expectEqual(HubWebSecurity.isAllowedHost("localhost:"), true, "host: empty port")
         t.expectEqual(HubWebSecurity.isAllowedHost("127.0.0.1:123456"), false, "host: overlong port")
 
-        t.expectEqual(HubWebSecurity.cookie(named: "claude_hub", in: "a=1; claude_hub=abc123; b=2"), "abc123", "cookie: found among others")
-        t.expectNil(HubWebSecurity.cookie(named: "claude_hub", in: "xclaude_hub=abc; other=1"), "cookie: name must match whole")
-        t.expectNil(HubWebSecurity.cookie(named: "claude_hub", in: nil), "cookie: no header")
+        t.expectEqual(HubWebSecurity.cookie(named: "claude_ship", in: "a=1; claude_ship=abc123; b=2"), "abc123", "cookie: found among others")
+        t.expectNil(HubWebSecurity.cookie(named: "claude_ship", in: "xclaude_ship=abc; other=1"), "cookie: name must match whole")
+        t.expectNil(HubWebSecurity.cookie(named: "claude_ship", in: nil), "cookie: no header")
         t.expectEqual(HubWebSecurity.constantTimeEquals("abcdef", "abcdef"), true, "token: equal")
         t.expectEqual(HubWebSecurity.constantTimeEquals("abcdef", "abcdeg"), false, "token: differs")
         t.expectEqual(HubWebSecurity.constantTimeEquals("abcdef", "abcde"), false, "token: prefix is not equal")

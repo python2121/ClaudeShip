@@ -29,7 +29,7 @@ final class HubSession {
     let master: Int32
     let cwd: String
     let startedAt = Date()
-    /// "terminal" (started by the `claudeandrew` command) or "web".
+    /// "terminal" (started by the `claudeship` command) or "web".
     let origin: String
     let permissionMode: String?
     var rows: UInt16
@@ -71,7 +71,7 @@ final class HubSession {
 /// Terminal clients reach it over a Unix socket, browsers through
 /// `HubWebServer`. All state lives on `queue`.
 final class Hub {
-    let queue = DispatchQueue(label: "claudestatus.hub")
+    let queue = DispatchQueue(label: "claudeship.hub")
     private(set) var sessions: [HubSession] = []
     /// Sessions that ended in the last half minute, kept so a screen that
     /// arrives just too late still gets what the program said and how it
@@ -83,10 +83,10 @@ final class Hub {
     private var locals: [ObjectIdentifier: HubLocalClient] = [:]
     private var web: HubWebServer?
 
-    /// The program a session runs. `CLAUDEANDREW_CMD` swaps in a stand-in
+    /// The program a session runs. `CLAUDESHIP_CMD` swaps in a stand-in
     /// so tests can exercise the pty path without starting Claude.
     static var program: String {
-        ProcessInfo.processInfo.environment["CLAUDEANDREW_CMD"].flatMap { $0.isEmpty ? nil : $0 } ?? "claude"
+        ProcessInfo.processInfo.environment["CLAUDESHIP_CMD"].flatMap { $0.isEmpty ? nil : $0 } ?? "claude"
     }
 
     init(config: HubConfig) {
@@ -468,7 +468,7 @@ final class Hub {
 
     // MARK: Launch recipes
 
-    /// What `claudeandrew [args]` runs: the program, straight from the
+    /// What `claudeship [args]` runs: the program, straight from the
     /// client's own environment and directory, as if typed there.
     func launchFromTerminal(cwd: String, args: [String], env: [String: String],
                             rows: UInt16, cols: UInt16) throws -> HubSession {
@@ -607,7 +607,7 @@ final class Hub {
     }
 }
 
-/// A `claudeandrew` process connected over the Unix socket. One connection
+/// A `claudeship` process connected over the Unix socket. One connection
 /// is either one attached terminal or one request/reply.
 final class HubLocalClient: HubAttachment {
     private let fd: Int32
@@ -619,7 +619,7 @@ final class HubLocalClient: HubAttachment {
     private var readSource: DispatchSourceRead?
     /// Writes block, so they run here — a stalled terminal (a suspended
     /// client, a full socket) must not stall the hub.
-    private let writer = DispatchQueue(label: "claudestatus.hub.local-writer")
+    private let writer = DispatchQueue(label: "claudeship.hub.local-writer")
     private let lock = NSLock()
     private var queuedBytes = 0
     private var closed = false

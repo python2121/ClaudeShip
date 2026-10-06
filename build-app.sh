@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build ClaudeStatus as a proper .app bundle so macOS treats it as a menubar
-# accessory app (LSUIElement). Output: ./ClaudeStatus.app
+# Build ClaudeShip as a proper .app bundle so macOS treats it as a menubar
+# accessory app (LSUIElement). Output: ./ClaudeShip.app
 set -euo pipefail
 
 CONFIG="${CONFIG:-release}"
-APP_NAME="ClaudeStatus"
-BUNDLE_ID="com.andrewnowicki.claudestatus"
+APP_NAME="ClaudeShip"
+BUNDLE_ID="com.andrewnowicki.claudeship"
 APP_DIR="${APP_NAME}.app"
 
 cd "$(dirname "$0")"
@@ -17,10 +17,10 @@ fi
 
 # The Command Line Tools cannot compile SwiftUI's `@State` (a macro whose
 # plugin ships only in Xcode, as of the macOS 27 SDK). Use `@ViewState` from
-# Sources/ClaudeStatus/ViewState.swift instead. This check keeps a machine
+# Sources/ClaudeShip/ViewState.swift instead. This check keeps a machine
 # that happens to have Xcode from reintroducing it.
 if grep -rnE '^[^/]*@State([^A-Za-z0-9_]|$)' Sources/ >/dev/null; then
-  echo "error: '@State' does not build with the Command Line Tools; use '@ViewState' (see Sources/ClaudeStatus/ViewState.swift):" >&2
+  echo "error: '@State' does not build with the Command Line Tools; use '@ViewState' (see Sources/ClaudeShip/ViewState.swift):" >&2
   grep -rnE '^[^/]*@State([^A-Za-z0-9_]|$)' Sources/ >&2
   exit 1
 fi
@@ -43,10 +43,10 @@ cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
 # The session hub and its terminal client are the same binary under another
 # name (App.main dispatches on argv[0]). A real copy rather than a symlink,
-# so the hub's process name is "claudeandrew" — install.sh restarts the
-# menubar app with `pkill -x ClaudeStatus`, which must never take the hub
+# so the hub's process name is "claudeship" — install.sh restarts the
+# menubar app with `pkill -x ClaudeShip`, which must never take the hub
 # (and every session it owns) down with it.
-HUB_NAME="claudeandrew"
+HUB_NAME="claudeship"
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${HUB_NAME}"
 
 # The hub's web app: static files it serves from Resources/web.
@@ -60,7 +60,7 @@ cat >"${APP_DIR}/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key>
   <string>${APP_NAME}</string>
   <key>CFBundleDisplayName</key>
-  <string>Claude Status</string>
+  <string>Claude Ship</string>
   <key>CFBundleIdentifier</key>
   <string>${BUNDLE_ID}</string>
   <key>CFBundleExecutable</key>
@@ -78,7 +78,7 @@ cat >"${APP_DIR}/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Claude Status brings a session's terminal to the front when you click its row.</string>
+  <string>Claude Ship brings a session's terminal to the front when you click its row.</string>
 </dict>
 </plist>
 PLIST

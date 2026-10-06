@@ -333,7 +333,7 @@ enum TerminalFocus {
     /// `request.json` from us, `reply.json` from the owning window.
     static var vscodeBridgeDir: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/ClaudeStatus/vscode-focus", isDirectory: true)
+            .appendingPathComponent("Library/Application Support/ClaudeShip/vscode-focus", isDirectory: true)
     }
 
     struct VSCodeReply: Equatable {
@@ -525,7 +525,7 @@ enum TerminalFocus {
         var error: NSDictionary?
         let result = script.executeAndReturnError(&error)
         if let error {
-            NSLog("ClaudeStatus: AppleScript failed: %@", error)
+            NSLog("ClaudeShip: AppleScript failed: %@", error)
             return nil
         }
         return result

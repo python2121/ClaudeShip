@@ -7,14 +7,14 @@ import Foundation
 /// write to a pipe is the classic way to get the news out.
 private var hubCLISignalPipe: Int32 = -1
 
-/// The `claudeandrew` command: runs Claude through the hub, so the session
+/// The `claudeship` command: runs Claude through the hub, so the session
 /// lives in the hub rather than in this terminal, and this terminal is one
-/// (replaceable) view of it. `claudeandrew hub …` manages the hub itself.
+/// (replaceable) view of it. `claudeship hub …` manages the hub itself.
 ///
-/// Reached two ways: the binary invoked under the name `claudeandrew` (the
-/// installed copy), or `ClaudeStatus --cli …` (a dev build).
+/// Reached two ways: the binary invoked under the name `claudeship` (the
+/// installed copy), or `ClaudeShip --cli …` (a dev build).
 enum HubCLI {
-    static let commandName = "claudeandrew"
+    static let commandName = "claudeship"
 
     static func run(_ args: [String]) -> Never {
         if args.first == "hub" {

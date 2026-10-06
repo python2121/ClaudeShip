@@ -10,7 +10,7 @@ enum SingleInstance {
 
     static func acquire() -> Bool {
         let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/ClaudeStatus", isDirectory: true)
+            .appendingPathComponent("Library/Application Support/ClaudeShip", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let path = dir.appendingPathComponent("instance.lock").path
 

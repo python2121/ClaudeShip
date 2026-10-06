@@ -7,10 +7,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP=build/Build/Products/Debug-iphonesimulator/ClaudeHub.app
-BUNDLE=com.python21.ClaudeHub
+APP=build/Build/Products/Debug-iphonesimulator/ClaudeShip.app
+BUNDLE=com.python21.ClaudeShip
 
-xcodebuild -project ClaudeHub.xcodeproj -scheme ClaudeHub \
+xcodebuild -project ClaudeShip.xcodeproj -scheme ClaudeShip \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
   -skipPackagePluginValidation \
   CODE_SIGNING_ALLOWED=NO build 2>&1 \
