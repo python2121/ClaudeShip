@@ -51,6 +51,13 @@ struct DirectoryView: View {
                         if DebugOff.contains("header") { Text(project.name) } else { ProjectHeader(project: project, running: true) }
                     }
                 }
+                // Sessions running outside the projects folder: shown while
+                // they run, never tracked otherwise.
+                if !state.elsewhere.isEmpty && filter.isEmpty {
+                    Section("Running elsewhere") {
+                        ForEach(state.elsewhere) { session in SessionRow(session: session, project: nil) }
+                    }
+                }
                 if !rest.isEmpty {
                     Section {
                         ForEach(rest) { project in
@@ -70,11 +77,6 @@ struct DirectoryView: View {
                         }
                     }
                 }
-                if !state.elsewhere.isEmpty && filter.isEmpty {
-                    Section("Elsewhere on this Mac") {
-                        ForEach(state.elsewhere) { session in SessionRow(session: session, project: nil) }
-                    }
-                }
             } else if store.error == nil {
                 Section { ProgressView().frame(maxWidth: .infinity) }
             }
@@ -85,28 +87,11 @@ struct DirectoryView: View {
         .searchable(text: $filter, prompt: "Filter projects")
         .refreshable { await store.refresh() }
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) { if !DebugOff.contains("tally") { tally } }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { settings = true } label: { Image(systemName: "gearshape") }
             }
         }
         .sheet(isPresented: $settings) { SettingsView() }
-    }
-
-    private var tally: some View {
-        let all = store.state?.allSessions ?? []
-        let waiting = all.filter { $0.status == "waiting" }.count
-        let busy = all.filter { $0.status == "busy" }.count
-        return HStack(spacing: 8) {
-            if waiting > 0 {
-                Label("\(waiting)", systemImage: "circle.fill").foregroundStyle(Palette.orange)
-            }
-            if busy > 0 {
-                Label("\(busy)", systemImage: "circle.lefthalf.filled").foregroundStyle(Palette.green)
-            }
-        }
-        .font(.footnote.weight(.semibold))
-        .labelStyle(.titleAndIcon)
     }
 
     private func matches(_ project: HubProject) -> Bool {

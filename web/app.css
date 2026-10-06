@@ -255,6 +255,9 @@ section + section { margin-top: 38px; }
 .card-title .branch { margin-left: auto; flex: 0 1 auto; min-width: 0; }
 
 .sessions { border-top: 1px solid var(--line); }
+.card > .sessions:first-child { border-top: 0; }
+.card > .sessions:first-child .session:first-child { border-radius: 15px 15px 0 0; }
+.card > .sessions:last-child .session:last-child { border-radius: 0 0 15px 15px; }
 
 .session {
   width: 100%;

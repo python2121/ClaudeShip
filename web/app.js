@@ -350,6 +350,17 @@
               'Nothing is running. Start a session below, or run ', h('code', null, 'claudeandrew'),
               ' in a terminal on the Mac.')));
     }
+    // Sessions running outside the projects folder: shown while they run,
+    // never tracked otherwise, right under the projects they sit beside.
+    if (data.elsewhere.length && !ui.filter) {
+      parts.push(h('section', null,
+        h('div', { class: 'section-head' },
+          h('h2', null, 'Running elsewhere'),
+          h('span', { class: 'count' }, String(data.elsewhere.length))),
+        h('div', { class: 'cards' },
+          h('article', { class: `card${data.elsewhere.some((s) => s.status === 'waiting') ? ' attention' : ''}` },
+            h('div', { class: 'sessions' }, data.elsewhere.map((s) => sessionRow(s, null, data)))))));
+    }
     if (rest.length) {
       parts.push(h('section', null,
         h('div', { class: 'section-head' },
@@ -360,14 +371,6 @@
     }
     if (!visible.length && ui.filter) {
       parts.push(h('div', { class: 'empty' }, `No project matches “${ui.filter}”.`));
-    }
-    if (data.elsewhere.length && !ui.filter) {
-      parts.push(h('section', null,
-        h('div', { class: 'section-head' },
-          h('h2', null, 'Elsewhere on this Mac'),
-          h('span', { class: 'count' }, String(data.elsewhere.length))),
-        h('div', { class: 'list' },
-          data.elsewhere.map((s) => sessionRow(s, null, data)))));
     }
     repaint(pageEl, parts);
   }
