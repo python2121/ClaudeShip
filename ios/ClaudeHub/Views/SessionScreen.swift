@@ -32,7 +32,8 @@ struct SessionScreen: View {
         .task {
             if terminal == nil {
                 let session = TerminalSession(hubId: hubId, connection: connection)
-                session.hubReachable = { [weak store] in store?.error == nil }
+                // The store outlives every session screen; no cycle to break.
+                session.hubReachable = { store.error == nil }
                 terminal = session
             }
         }

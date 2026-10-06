@@ -19,7 +19,7 @@ struct TerminalContainer: UIViewRepresentable {
         view.inputAccessoryView = bar
         DispatchQueue.main.async {
             session.attach(view)
-            view.becomeFirstResponder()
+            _ = view.becomeFirstResponder()
         }
         return view
     }
