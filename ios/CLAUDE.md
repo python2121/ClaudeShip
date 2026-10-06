@@ -50,7 +50,7 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
 - `Terminal/TerminalSession.swift` is the attachment: `URLSessionWebSocketTask`
   to `/ws/term?id&rows&cols&claim`, binary frames fed to SwiftTerm, JSON
   control frames the other way. Size rules are the web page's (CLAUDE.md
-  "One pty, one size"): first connect claims, reconnects don't, `resize`
+  "One pty, one size"): any connect while the app is in front claims (background reconnects don't) and coming back to the foreground claims outright, `resize`
   when this screen owns the size and `fit` when it doesn't, a `size`
   message with `owner:false` and a foreign grid shrinks the font so that
   grid fits and shows "Fit here". Heartbeat `ping`/`pong` every 15 s;

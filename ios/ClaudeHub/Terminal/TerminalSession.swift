@@ -76,13 +76,16 @@ final class TerminalSession: NSObject, TerminalViewDelegate {
     }
 
     /// The app came back to the front: a socket that died meanwhile still
-    /// says it is open, so ask it, and start over if it doesn't answer.
+    /// says it is open, so ask it, and start over if it doesn't answer. And
+    /// a phone being looked at is the screen the session should fit — take
+    /// the size rather than ask.
     func revive() {
         guard ended == nil, !closed else { return }
         if task == nil || task?.state != .running {
             reconnectNow()
             return
         }
+        claim()
         let asked = Date()
         heard = asked
         sendControl(["type": "ping"])
@@ -113,10 +116,12 @@ final class TerminalSession: NSObject, TerminalViewDelegate {
 
     private func connect() {
         guard ended == nil, !closed else { return }
-        // Opening a session sizes it for this screen; coming back after a
-        // drop does not, so the session isn't reflowed under whoever is
-        // using it now (the hub hands the size back if nobody is).
-        let claiming = !connected && UIApplication.shared.applicationState == .active
+        // Attaching while the phone is in front sizes the session for it: a
+        // phone being looked at is the screen that matters. A socket that
+        // flaps while the app is in the background rejoins as a spectator, so
+        // a pocketed phone doesn't reflow the session under whoever is using
+        // it (the hub hands the size over anyway if nobody else is attached).
+        let claiming = UIApplication.shared.applicationState == .active
         owner = claiming
         sent = own
         guard let request = connection.terminalRequest(hubId: hubId, cols: own.cols, rows: own.rows, claim: claiming) else { return }
