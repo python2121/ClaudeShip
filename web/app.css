@@ -576,23 +576,46 @@ button.session:hover { background: var(--surface-2); }
 /* The dock: every window that isn't the full-screen one. */
 .dock {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
-  display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+  display: flex; gap: 8px; justify-content: flex-start; flex-wrap: wrap;
   padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
   pointer-events: none;
 }
+/* A taskbar's three looks: the window in front (lit, accent underline),
+   one behind another window (plain), one minimized (sunk and dim). */
 .chip {
   pointer-events: auto;
+  position: relative;
   display: inline-flex; align-items: center; gap: 8px;
   max-width: 320px; height: 34px; padding: 0 6px 0 12px;
-  border-radius: 999px; border: 1px solid var(--line);
+  border-radius: 10px; border: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface) 88%, transparent);
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   color: var(--text); font: inherit; font-size: 13px; cursor: pointer;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
 }
+.chip::after {
+  content: ''; position: absolute; left: 12px; right: 12px; bottom: 0;
+  height: 2px; border-radius: 2px 2px 0 0; background: transparent;
+}
 .chip:hover { background: var(--surface-2); }
-.chip.min { color: var(--dim); }
-.chip.popped { color: var(--dim); }
+.chip.active {
+  background: var(--surface-2);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+.chip.active::after { background: var(--accent); }
+.chip.behind { color: var(--dim); }
+.chip.behind .chip-name { color: var(--text); }
+.chip.min, .chip.popped {
+  color: var(--faint);
+  background: color-mix(in srgb, var(--surface) 55%, #000 12%);
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+  box-shadow: none;
+}
+.chip.min .chip-name, .chip.popped .chip-name { color: var(--dim); }
+.chip.min .glyph, .chip.popped svg { opacity: 0.6; }
+/* An idle session's hollow ring reads as a black dot on the dock's dark
+   chip; white keeps it as visible as the coloured states beside it. */
+.chip .glyph { border-color: var(--text); }
 .chip.popped svg { width: 14px; height: 14px; }
 .chip-name { font-weight: 620; white-space: nowrap; }
 .chip-title { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

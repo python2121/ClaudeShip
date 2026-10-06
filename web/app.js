@@ -1029,6 +1029,17 @@
     if (t.mode !== 'float') return;
     zTop += 1;
     t.page.style.zIndex = zTop;
+    t.z = zTop;
+    renderDock();
+  }
+
+  /** The floating window in front: the one raised last. */
+  function focusedTerminal() {
+    let top = null;
+    for (const t of terminals.values()) {
+      if (t.mode === 'float' && (!top || (t.z || 0) > (top.z || 0))) top = t;
+    }
+    return top;
   }
 
   function placeWindow(t) {
@@ -1149,11 +1160,14 @@
 
   function renderDock() {
     const chips = [];
+    const front = focusedTerminal();
     for (const t of terminals.values()) {
       if (t.mode === 'full') continue;
+      // Three looks: in front, behind another window, minimized.
+      const look = t.mode === 'min' ? 'min' : t === front ? 'active' : 'behind';
       chips.push(h('button', {
-        class: `chip ${t.mode}`, 'data-key': `dock:${t.id}`,
-        title: t.mode === 'min' ? 'Restore' : 'Bring to front',
+        class: `chip ${look}`, 'data-key': `dock:${t.id}`,
+        title: t.mode === 'min' ? 'Restore' : t === front ? 'In front' : 'Bring to front',
         onclick: () => { setMode(t, 'float'); },
       },
         h('span', { class: `glyph ${t.glyph.className.replace('glyph', '').trim()}` }),

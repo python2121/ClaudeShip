@@ -452,7 +452,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         image.lockFocus()
         drawn.draw(in: NSRect(origin: .zero, size: drawn.size))
         image.unlockFocus()
-        image.isTemplate = false
+        // The idle ring is a template: the system tints it to the menu
+        // bar's own appearance (white on a dark bar, black on a light one,
+        // dimmed when inactive), the way every other menu bar icon is.
+        // Drawn literally in the app's label colour it followed the *app's*
+        // appearance, which on a light system with a dark menu bar meant
+        // a black ring among white icons. Coloured states stay literal.
+        image.isTemplate = state == .idle
         if glyphCache.count > 256 { glyphCache.removeAll() }
         glyphCache[key] = image
         return image
