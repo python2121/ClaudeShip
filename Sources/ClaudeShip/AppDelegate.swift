@@ -394,10 +394,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// spin stops so the next busy period always starts from the left. Keep
     /// the interval in step with the frame count in trayGlyphImage —
     /// changing one without the other changes the spin rate.
+    /// Whether the busy glyph animates. Off by default: the 16 fps spinner
+    /// measured at ~5.5% of a core for as long as any session was busy,
+    /// which is most of the time. `CLAUDESHIP_SPINNER=1` brings it back.
+    static let spinnerEnabled = ProcessInfo.processInfo.environment["CLAUDESHIP_SPINNER"] == "1"
+
     private func syncSpinner(with state: SessionStore.TrayState) {
-        // CLAUDESTATUS_NO_SPINNER=1: a static busy glyph, for measuring what
-        // the animation itself costs.
-        if state == .busy, ProcessInfo.processInfo.environment["CLAUDESTATUS_NO_SPINNER"] == nil {
+        if state == .busy, Self.spinnerEnabled {
             guard spinnerTimer == nil else { return }
             spinnerTimer = Timer.scheduledTimer(withTimeInterval: 2.0 / 32, repeats: true) { [weak self] _ in
                 Task { @MainActor in
@@ -485,6 +488,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ring.lineWidth = stroke
                 ring.stroke()
             case .waiting:
+                NSBezierPath(ovalIn: box).fill()
+            case .busy where !spinnerEnabled:
                 NSBezierPath(ovalIn: box).fill()
             case .busy:
                 let ring = NSBezierPath(ovalIn: outlineBox)

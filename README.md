@@ -17,7 +17,7 @@ Everything stays on your Mac. The only thing on the network is the hub, and it a
 
 The glyph:
 
-- **◐◓◑◒ spinning, green** — one or more sessions are busy
+- **● green** — one or more sessions are busy
 - **● orange** — one or more sessions are **waiting on your input**
 - **○** — everything is idle (or nothing is running)
 

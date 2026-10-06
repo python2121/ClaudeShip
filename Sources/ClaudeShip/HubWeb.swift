@@ -1,7 +1,6 @@
 import CryptoKit
 import Darwin
 import Foundation
-import Network
 import Security
 
 // MARK: - HTTP
@@ -149,6 +148,43 @@ enum HubWebSecurity {
             }
         }
         return found
+    }
+
+    /// The raw address (4 or 16 bytes) of a socket's peer, or nil.
+    static func addressBytes(peerOf fd: Int32) -> [UInt8]? {
+        var storage = sockaddr_storage()
+        var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let ok = withUnsafeMutablePointer(to: &storage) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getpeername(fd, $0, &length) == 0 }
+        }
+        return ok ? addressBytes(of: storage) : nil
+    }
+
+    /// The raw address a socket is bound to on our side (the interface the
+    /// connection arrived on), or nil.
+    static func addressBytes(localOf fd: Int32) -> [UInt8]? {
+        var storage = sockaddr_storage()
+        var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let ok = withUnsafeMutablePointer(to: &storage) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) == 0 }
+        }
+        return ok ? addressBytes(of: storage) : nil
+    }
+
+    private static func addressBytes(of storage: sockaddr_storage) -> [UInt8]? {
+        var storage = storage
+        switch Int32(storage.ss_family) {
+        case AF_INET:
+            return withUnsafePointer(to: &storage) {
+                $0.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { withUnsafeBytes(of: $0.pointee.sin_addr) { Array($0) } }
+            }
+        case AF_INET6:
+            return withUnsafePointer(to: &storage) {
+                $0.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { withUnsafeBytes(of: $0.pointee.sin6_addr) { Array($0) } }
+            }
+        default:
+            return nil
+        }
     }
 
     static func addressBytes(_ literal: String) -> [UInt8]? {
@@ -381,9 +417,15 @@ struct WebSocketParser {
 
 /// The hub's web face: the project directory page, its JSON API, and one
 /// WebSocket per browser terminal. Everything runs on the hub queue.
+///
+/// Plain BSD sockets, not Network.framework: `NWListener` never completes
+/// a handshake for a connection arriving over Tailscale's `utun` interface
+/// (verified: loopback fine, tailnet silently dropped, in every parameter
+/// combination), which made the hub unreachable from a phone.
 final class HubWebServer {
     private unowned let hub: Hub
-    private var listener: NWListener?
+    private var listenFD: Int32 = -1
+    private var acceptSource: DispatchSourceRead?
     private var connections: [ObjectIdentifier: HubWebConnection] = [:]
     private(set) var listening = false
 
@@ -412,55 +454,47 @@ final class HubWebServer {
     var queue: DispatchQueue { hub.queue }
 
     func start() {
-        let tcp = NWProtocolTCP.Options()
-        tcp.noDelay = true
-        // A phone that walks out of range never says goodbye; keepalive is
-        // what eventually notices and frees its attachment.
-        tcp.enableKeepalive = true
-        tcp.keepaliveIdle = 30
-        tcp.keepaliveInterval = 10
-        tcp.keepaliveCount = 4
-        let parameters = NWParameters(tls: nil, tcp: tcp)
-        parameters.allowLocalEndpointReuse = true
-        guard let port = NWEndpoint.Port(rawValue: UInt16(hub.config.port)),
-              let listener = try? NWListener(using: parameters, on: port)
-        else {
-            if !loggedListenFailure { HubLog.log("web: cannot listen on port \(hub.config.port); retrying quietly") }
+        guard listenFD < 0 else { return }
+        let port = UInt16(hub.config.port)
+        // One dual-stack socket: IPv6 with v6only off takes IPv4 too.
+        var fd = socket(AF_INET6, SOCK_STREAM, 0)
+        var bound = false
+        if fd >= 0 {
+            var off: Int32 = 0
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, socklen_t(MemoryLayout<Int32>.size))
+            var on: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
+            var addr = sockaddr_in6()
+            addr.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+            addr.sin6_family = sa_family_t(AF_INET6)
+            addr.sin6_port = port.bigEndian
+            addr.sin6_addr = in6addr_any
+            bound = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) == 0 }
+            }
+            if !bound { close(fd); fd = -1 }
+        }
+        guard bound, fd >= 0, listen(fd, 32) == 0 else {
+            if fd >= 0 { close(fd) }
+            if !loggedListenFailure {
+                HubLog.log("web: cannot listen on port \(port): \(String(cString: strerror(errno))); retrying quietly")
+            }
             loggedListenFailure = true
             retryLater()
             return
         }
-        listener.newConnectionHandler = { [weak self] connection in
-            guard let self else { return }
-            // Each connection is a descriptor the hub also needs for ptys.
-            guard self.connections.count < Self.maxConnections else {
-                connection.cancel()
-                return
-            }
-            let web = HubWebConnection(connection: connection, server: self, hub: self.hub)
-            self.connections[ObjectIdentifier(web)] = web
-            web.start()
-        }
-        listener.stateUpdateHandler = { [weak self, weak listener] state in
-            guard let self, let listener, self.listener === listener else { return }
-            switch state {
-            case .ready:
-                self.listening = true
-                self.loggedListenFailure = false
-                HubLog.log("web: listening on port \(self.hub.config.port)")
-            case .failed(let error):
-                if !self.loggedListenFailure { HubLog.log("web: listener failed: \(error); retrying quietly") }
-                self.loggedListenFailure = true
-                self.listening = false
-                listener.cancel()
-                self.listener = nil
-                self.retryLater()
-            default:
-                break
-            }
-        }
-        self.listener = listener
-        listener.start(queue: queue)
+        _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        listenFD = fd
+        listening = true
+        loggedListenFailure = false
+        HubLog.log("web: listening on port \(port)")
+
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        source.setEventHandler { [weak self] in self?.acceptPending() }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        acceptSource = source
 
         if sweepTimer == nil {
             // Drops connections that stopped making progress: a request
@@ -477,9 +511,47 @@ final class HubWebServer {
         }
     }
 
+    private func acceptPending() {
+        while true {
+            var addr = sockaddr_storage()
+            var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+            let fd = withUnsafeMutablePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { accept(listenFD, $0, &length) }
+            }
+            guard fd >= 0 else { return }  // EAGAIN: drained
+            // Each connection is a descriptor the hub also needs for ptys.
+            guard connections.count < Self.maxConnections else {
+                close(fd)
+                continue
+            }
+            // The gate: who it is and which of our addresses they reached.
+            guard let remote = HubWebSecurity.addressBytes(peerOf: fd), let local = HubWebSecurity.addressBytes(localOf: fd),
+                  HubWebSecurity.isAllowedPair(local: local, remote: remote, tunnel: HubWebSecurity.tunnelAddresses())
+            else {
+                close(fd)
+                continue
+            }
+            _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+            _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+            var on: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, socklen_t(MemoryLayout<Int32>.size))
+            // A phone that walks out of range never says goodbye; keepalive
+            // is what eventually notices and frees its attachment.
+            setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, socklen_t(MemoryLayout<Int32>.size))
+            var idle: Int32 = 30, interval: Int32 = 10, count: Int32 = 4
+            setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, socklen_t(MemoryLayout<Int32>.size))
+            setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, socklen_t(MemoryLayout<Int32>.size))
+            setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, socklen_t(MemoryLayout<Int32>.size))
+            let web = HubWebConnection(fd: fd, server: self, hub: hub)
+            connections[ObjectIdentifier(web)] = web
+            web.start()
+        }
+    }
+
     private func retryLater() {
         queue.asyncAfter(deadline: .now() + 10) { [weak self] in
-            guard let self, self.listener == nil else { return }
+            guard let self, self.listenFD < 0 else { return }
             self.start()
         }
     }
@@ -545,15 +617,20 @@ final class HubWebServer {
 }
 
 /// One accepted TCP connection: a single HTTP request, or a WebSocket that
-/// stays open as a terminal attachment.
+/// stays open as a terminal attachment. Non-blocking socket; a read source
+/// feeds the parser, a write source (armed only while output is queued)
+/// drains what the peer couldn't take at once.
 final class HubWebConnection: HubAttachment {
-    private let connection: NWConnection
+    private let fd: Int32
     private unowned let server: HubWebServer
     private unowned let hub: Hub
     private var buffer = Data()
     private var parser: WebSocketParser?
     private weak var session: HubSession?
-    private var queuedBytes = 0
+    private var readSource: DispatchSourceRead?
+    private var writeSource: DispatchSourceWrite?
+    private var pending = Data()
+    private var finishWhenDrained = false
     private var closed = false
     private var responded = false
     private let openedAt = Date()
@@ -563,29 +640,21 @@ final class HubWebConnection: HubAttachment {
     var cols: UInt16 = 80
     private static let maxQueuedBytes = 32 << 20
 
-    init(connection: NWConnection, server: HubWebServer, hub: Hub) {
-        self.connection = connection
+    init(fd: Int32, server: HubWebServer, hub: Hub) {
+        self.fd = fd
         self.server = server
         self.hub = hub
     }
 
     func start() {
-        connection.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
-            switch state {
-            case .ready:
-                guard self.peersAllowed() else {
-                    self.finish()
-                    return
-                }
-                self.receive()
-            case .failed, .cancelled:
-                self.finish()
-            default:
-                break
-            }
-        }
-        connection.start(queue: server.queue)
+        let fd = self.fd
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: server.queue)
+        source.setEventHandler { [weak self] in self?.readable() }
+        // The only place the descriptor is closed: after the source is
+        // fully cancelled, so it can't be reused under a live source.
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        readSource = source
     }
 
     /// Called periodically: give up on a plain request that hasn't finished
@@ -597,36 +666,25 @@ final class HubWebConnection: HubAttachment {
             // A request that hasn't even been answered yet; one that is
             // mid-response (xterm.js over a thin link) gets the stall rule.
             if !responded, now.timeIntervalSince(openedAt) > 15 { finish() }
-        } else if queuedBytes > 0, now.timeIntervalSince(lastProgress) > 60 {
+        } else if !pending.isEmpty, now.timeIntervalSince(lastProgress) > 60 {
             finish()
         }
     }
 
-    /// See `HubWebSecurity.isAllowedPair`: loopback to loopback, or tailnet
-    /// peer to an address our tunnel interface holds.
-    private func peersAllowed() -> Bool {
-        func bytes(_ endpoint: NWEndpoint?) -> [UInt8]? {
-            guard case .hostPort(let host, _)? = endpoint else { return nil }
-            switch host {
-            case .ipv4(let address): return [UInt8](address.rawValue)
-            case .ipv6(let address): return [UInt8](address.rawValue)
-            default: return nil
-            }
-        }
-        guard let remote = bytes(connection.currentPath?.remoteEndpoint ?? connection.endpoint),
-              let local = bytes(connection.currentPath?.localEndpoint)
-        else { return false }
-        return HubWebSecurity.isAllowedPair(local: local, remote: remote, tunnel: HubWebSecurity.tunnelAddresses())
-    }
-
-    private func receive() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, complete, error in
-            guard let self, !self.closed else { return }
-            if let data, !data.isEmpty { self.received(data) }
-            if complete || error != nil {
-                self.finish()
-            } else if !self.closed {
-                self.receive()
+    private func readable() {
+        var chunk = [UInt8](repeating: 0, count: 65_536)
+        for _ in 0..<8 {
+            let n = chunk.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+            if n > 0 {
+                received(Data(chunk[0..<n]))
+                if closed { return }
+            } else if n < 0 && errno == EINTR {
+                continue
+            } else if n < 0 && errno == EAGAIN {
+                return
+            } else {
+                finish()  // EOF or error
+                return
             }
         }
     }
@@ -809,8 +867,9 @@ final class HubWebConnection: HubAttachment {
     private func respond(_ status: Int, _ reason: String, contentType: String, body: Data, extra: [String] = []) {
         guard !closed, !responded else { return }
         responded = true
-        let data = HubHTTP.response(status: status, reason: reason, contentType: contentType, body: body, extra: extra)
-        connection.send(content: data, completion: .contentProcessed { [weak self] _ in self?.finish() })
+        send(HubHTTP.response(status: status, reason: reason, contentType: contentType, body: body, extra: extra))
+        finishWhenDrained = true
+        flush()
     }
 
     // MARK: WebSocket
@@ -898,25 +957,57 @@ final class HubWebConnection: HubAttachment {
 
     private func closeWebSocket() {
         guard !closed else { return }
-        let frame = WebSocketCodec.encode(opcode: 8, payload: Data([0x03, 0xe8]))
-        connection.send(content: frame, completion: .contentProcessed { [weak self] _ in self?.finish() })
+        send(WebSocketCodec.encode(opcode: 8, payload: Data([0x03, 0xe8])))
+        finishWhenDrained = true
+        flush()
     }
 
     private func send(_ data: Data) {
         guard !closed else { return }
-        if queuedBytes == 0 { lastProgress = Date() }
-        queuedBytes += data.count
-        guard queuedBytes <= Self.maxQueuedBytes else {
+        if pending.isEmpty { lastProgress = Date() }
+        pending.append(data)
+        guard pending.count <= Self.maxQueuedBytes else {
             // Hopelessly behind; it can reconnect and take the replay.
             finish()
             return
         }
-        connection.send(content: data, completion: .contentProcessed { [weak self] error in
-            guard let self else { return }
-            self.queuedBytes -= data.count
-            self.lastProgress = Date()
-            if error != nil { self.finish() }
-        })
+        flush()
+    }
+
+    /// Write what the socket will take now; arm the write source for the rest.
+    private func flush() {
+        while !pending.isEmpty, !closed {
+            let n = pending.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+            if n > 0 {
+                pending.removeFirst(n)
+                lastProgress = Date()
+            } else if n < 0 && errno == EINTR {
+                continue
+            } else if n < 0 && errno == EAGAIN {
+                armWriteSource()
+                return
+            } else {
+                finish()
+                return
+            }
+        }
+        writeSource?.cancel()
+        writeSource = nil
+        if finishWhenDrained, !closed { finish() }
+    }
+
+    private func armWriteSource() {
+        guard writeSource == nil else { return }
+        // Its own descriptor, so cancelling it never races the read source's
+        // close of the socket.
+        let dup = Darwin.dup(fd)
+        guard dup >= 0 else { return }
+        _ = fcntl(dup, F_SETFD, FD_CLOEXEC)
+        let source = DispatchSource.makeWriteSource(fileDescriptor: dup, queue: server.queue)
+        source.setEventHandler { [weak self] in self?.flush() }
+        source.setCancelHandler { close(dup) }
+        source.resume()
+        writeSource = source
     }
 
     private func finish() {
@@ -924,8 +1015,11 @@ final class HubWebConnection: HubAttachment {
         closed = true
         if let session { hub.detach(self, from: session) }
         session = nil
-        connection.stateUpdateHandler = nil
-        connection.cancel()
+        pending.removeAll()
+        writeSource?.cancel()
+        writeSource = nil
+        readSource?.cancel()
+        readSource = nil
         server.remove(self)
     }
 }

@@ -127,7 +127,7 @@ if [[ "${SKIP_HUB:-0}" != "1" ]]; then
   fi
   "${HUB_BIN}" hub start || echo "WARNING: session hub did not start" >&2
   echo "==> to open the web app in a browser (or on the phone): claudeship hub link"
-  if pgrep -f "ClaudeStatus.app/Contents/MacOS/claudeandrew hub run" >/dev/null 2>&1; then
+  if ps -Ao command | grep -q "^/Applications/ClaudeStatus.app/.*hub run"; then
     echo "NOTE: the running hub is the old ClaudeStatus build, whose bundle is now gone;"
     echo "      its current sessions keep working, but new ones will fail to start until"
     echo "      you restart it (ends those sessions): claudeship hub stop && claudeship hub start"
