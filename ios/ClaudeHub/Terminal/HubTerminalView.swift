@@ -12,10 +12,10 @@ import UIKit
 /// transcript is scrolled from a mouse. On the normal screen (mouse
 /// reporting off) the view keeps SwiftTerm's native scrollback scrolling.
 final class HubTerminalView: TerminalView {
-    /// Finger travel, in lines, per wheel event. Claude Code moves a few
-    /// lines per wheel notch, so one notch per line of travel runs away
-    /// from the finger; two feels like 1:1.
-    var linesPerWheelTick: CGFloat = 2
+    /// Finger travel, in lines, per wheel event. Measured: Claude Code
+    /// scrolls exactly one line per wheel event, so one event per line of
+    /// travel is 1:1 with the finger.
+    var linesPerWheelTick: CGFloat = 1
 
     private let scrollPan = UIPanGestureRecognizer()
     private var travel: CGFloat = 0

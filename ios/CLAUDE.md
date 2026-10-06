@@ -61,7 +61,7 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
   recognizer and the scroll view's own pan, and turns vertical drags into
   wheel events (`Terminal.sendEvent`, buttons 64/65, encoded in whatever
   mouse protocol the program negotiated) with scroll-view-style momentum.
-  `linesPerWheelTick` is the feel knob. With reporting off, SwiftTerm's
+  `linesPerWheelTick` is the feel knob (1: measured, Claude Code scrolls one line per wheel event, answering in 3–26 ms on the Mac — what's left of the lag is the tailnet round trip, Claude's per-event redraw, and SwiftTerm's 60 fps coalescing). For truly local, native scrolling, a session can run Claude's classic non-fullscreen TUI (`/tui default` in the session, or `--settings '{"tui":"default"}'` at launch): the transcript then lives in the terminal's own scrollback. With reporting off, SwiftTerm's
   native scrollback scrolling is back. `KeyBar` is the row above the
   keyboard (esc, tab, ⇧tab, ^C, arrows, pgup/pgdn, ⏎); arrows honour
   application-cursor mode.
