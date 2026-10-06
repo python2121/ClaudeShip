@@ -87,11 +87,33 @@ struct DirectoryView: View {
         .searchable(text: $filter, prompt: "Filter projects")
         .refreshable { await store.refresh() }
         .toolbar {
+            // Plain, not in a glass capsule: it's a readout, not a control.
+            if #available(iOS 26, *) {
+                ToolbarItem(placement: .topBarLeading) { tally }.sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .topBarLeading) { tally }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { settings = true } label: { Image(systemName: "gearshape") }
             }
         }
         .sheet(isPresented: $settings) { SettingsView() }
+    }
+
+    private var tally: some View {
+        let all = store.state?.allSessions ?? []
+        let waiting = all.filter { $0.status == "waiting" }.count
+        let busy = all.filter { $0.status == "busy" }.count
+        return HStack(spacing: 8) {
+            if waiting > 0 {
+                Label("\(waiting)", systemImage: "circle.fill").foregroundStyle(Palette.orange)
+            }
+            if busy > 0 {
+                Label("\(busy)", systemImage: "circle.lefthalf.filled").foregroundStyle(Palette.green)
+            }
+        }
+        .font(.footnote.weight(.semibold))
+        .labelStyle(.titleAndIcon)
     }
 
     private func matches(_ project: HubProject) -> Bool {
