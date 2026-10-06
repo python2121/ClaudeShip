@@ -3,3 +3,6 @@
 *.app
 .env
 .DS_Store
+ios/build/
+ios/ClaudeHub.xcodeproj/xcuserdata/
+ios/ClaudeHub.xcodeproj/project.xcworkspace/xcuserdata/
