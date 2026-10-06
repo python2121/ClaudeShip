@@ -138,7 +138,7 @@ enum SessionScanner {
                 .appendingPathComponent(projectDirName(forCwd: cwd), isDirectory: true)
                 .appendingPathComponent("\(sid).jsonl")
             mtime = (try? FileManager.default.attributesOfItem(atPath: transcript.path)[.modificationDate]) as? Date
-            if mtime != nil, let tail = readTail(of: transcript) {
+            if let mtime, let tail = cachedTail(of: transcript, mtime: mtime) {
                 branch = tail.gitBranch
                 title = tail.aiTitle
             }
@@ -225,6 +225,26 @@ enum SessionScanner {
     }
 
     // MARK: Transcript lookup (branch garnish only)
+
+    /// Transcript path → the tail parsed at a given mtime. A busy session
+    /// rewrites its transcript constantly, but an idle one doesn't, and
+    /// re-reading 64 KB per session every two seconds was most of the
+    /// app's resting CPU. Scans run off-main and may overlap, hence the lock.
+    private static var tailCache: [String: (mtime: Date, tail: TranscriptTail?)] = [:]
+    private static let tailCacheLock = NSLock()
+
+    static func cachedTail(of url: URL, mtime: Date) -> TranscriptTail? {
+        tailCacheLock.lock()
+        let hit = tailCache[url.path]
+        tailCacheLock.unlock()
+        if let hit, hit.mtime == mtime { return hit.tail }
+        let tail = readTail(of: url)
+        tailCacheLock.lock()
+        tailCache[url.path] = (mtime, tail)
+        if tailCache.count > 256 { tailCache.removeAll() }  // sessions come and go; keep it bounded
+        tailCacheLock.unlock()
+        return tail
+    }
 
     /// Claude Code names each project dir by flattening the cwd: every char
     /// that isn't alphanumeric or `-` becomes `-` (slashes included, so the

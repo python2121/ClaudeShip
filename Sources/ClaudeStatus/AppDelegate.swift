@@ -395,7 +395,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the interval in step with the frame count in trayGlyphImage —
     /// changing one without the other changes the spin rate.
     private func syncSpinner(with state: SessionStore.TrayState) {
-        if state == .busy {
+        // CLAUDESTATUS_NO_SPINNER=1: a static busy glyph, for measuring what
+        // the animation itself costs.
+        if state == .busy, ProcessInfo.processInfo.environment["CLAUDESTATUS_NO_SPINNER"] == nil {
             guard spinnerTimer == nil else { return }
             spinnerTimer = Timer.scheduledTimer(withTimeInterval: 2.0 / 32, repeats: true) { [weak self] _ in
                 Task { @MainActor in
@@ -418,7 +420,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// pill look the numeric label had; idle stays plain. Redrawn on demand
     /// so dynamic colors (idle's labelColor) re-resolve when the system
     /// appearance changes.
+    /// Rasterized once per (state, frame, appearance) and reused: the
+    /// spinner swaps images sixteen times a second, and re-running the
+    /// vector drawing on every swap was a steady few percent of a core.
+    /// Keyed by appearance because the idle glyph uses a dynamic color.
+    private static var glyphCache: [String: NSImage] = [:]
+
     private static func trayGlyphImage(
+        state: SessionStore.TrayState,
+        spinnerFrame: Int,
+        invert: Bool,
+        pointSize: CGFloat
+    ) -> NSImage {
+        let frame = ((spinnerFrame % 32) + 32) % 32
+        let key = "\(state)-\(state == .busy ? frame : 0)-\(invert)-\(pointSize)-\(NSApp.effectiveAppearance.name.rawValue)"
+        if let cached = glyphCache[key] { return cached }
+        let drawn = drawTrayGlyph(state: state, spinnerFrame: frame, invert: invert, pointSize: pointSize)
+        // Flatten to a bitmap at the screen's scale so a swap is a blit.
+        let image = NSImage(size: drawn.size)
+        image.lockFocus()
+        drawn.draw(in: NSRect(origin: .zero, size: drawn.size))
+        image.unlockFocus()
+        image.isTemplate = false
+        if glyphCache.count > 256 { glyphCache.removeAll() }
+        glyphCache[key] = image
+        return image
+    }
+
+    private static func drawTrayGlyph(
         state: SessionStore.TrayState,
         spinnerFrame: Int,
         invert: Bool,
