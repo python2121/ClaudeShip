@@ -540,6 +540,71 @@ button.session:hover { background: var(--surface-2); }
   .search { font-size: 16px; }
 }
 
+/* ── Windows ────────────────────────────────────────────── */
+
+.term-page.full { z-index: 1000; }
+.term-page.float {
+  inset: auto;
+  height: auto;
+  box-sizing: border-box;
+  min-width: 320px; min-height: 200px;
+  border: 1px solid rgba(255, 248, 235, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
+  resize: both;
+  overflow: hidden;
+}
+.term-page.float .term-bar {
+  cursor: grab;
+  padding: 7px 8px 7px 10px;
+  user-select: none; -webkit-user-select: none;
+}
+.term-page.float .term-bar.dragging { cursor: grabbing; }
+.term-page.float .term-bar .back { display: none; }
+.term-page.float .keys { display: none; }
+.term-page.full .win-btn.maximize { display: none; }
+.term-page.float .win-btn.window { display: none; }
+.win-controls { flex: none; display: flex; align-items: center; gap: 2px; margin-left: 2px; }
+.win-btn {
+  width: 28px; height: 28px; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--dim); background: transparent; border: 0; cursor: pointer;
+}
+.win-btn svg { width: 15px; height: 15px; }
+.win-btn:hover { background: var(--surface-2); color: var(--text); }
+.win-btn.close:hover { background: #b3402e; color: #fff; }
+/* The dock: every window that isn't the full-screen one. */
+.dock {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
+  display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+  pointer-events: none;
+}
+.chip {
+  pointer-events: auto;
+  display: inline-flex; align-items: center; gap: 8px;
+  max-width: 320px; height: 34px; padding: 0 6px 0 12px;
+  border-radius: 999px; border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  color: var(--text); font: inherit; font-size: 13px; cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+}
+.chip:hover { background: var(--surface-2); }
+.chip.min { color: var(--dim); }
+.chip.popped { color: var(--dim); }
+.chip.popped svg { width: 14px; height: 14px; }
+.chip-name { font-weight: 620; white-space: nowrap; }
+.chip-title { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%; color: var(--faint);
+}
+.chip-x svg { width: 12px; height: 12px; }
+.chip-x:hover { background: var(--surface-2); color: var(--text); }
+body.popped .dock { display: none; }
+body.popped .term-bar .back { display: none; }
+
 /* ── Narrow screens ─────────────────────────────────────── */
 
 @media (max-width: 720px) {
@@ -553,7 +618,16 @@ button.session:hover { background: var(--surface-2); }
   .row-main .launch { grid-column: 2; grid-row: 1 / span 2; }
   .card-head, .session, .card-foot { padding-left: 14px; padding-right: 14px; }
   .term-state .long { display: none; }
+  /* No windows on a small screen: full and minimized only, and Back
+     already closes, so the bar keeps just minimize. */
+  .win-btn.window, .win-btn.maximize, .win-btn.popout, .win-btn.close { display: none; }
+  .win-controls { margin-left: -4px; }
+  .chip { max-width: calc(100vw - 24px); }
 }
+@media (pointer: coarse) {
+  .win-btn.window, .win-btn.maximize, .win-btn.popout { display: none; }
+}
+body.has-dock .page { padding-bottom: 72px; }
 
 @media (prefers-reduced-motion: reduce) {
   .menu { animation: none; }

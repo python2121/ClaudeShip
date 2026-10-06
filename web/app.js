@@ -30,6 +30,12 @@
     right: 'm9 6 6 6-6 6',
     left: 'm15 6-6 6 6 6',
     branch: 'M7 4v10m0 0a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm10-4a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm0 0c0 4-10 2-10 6',
+    minimize: 'M6 12h12',
+    window: 'M8 8V5h11v11h-3M5 8h11v11H5z',
+    maximize: 'M5 5h14v14H5z',
+    close: 'M6 6l12 12M18 6 6 18',
+    popout: 'M14 5h5v5M19 5l-8 8M10 5H5v14h14v-5',
+    popin: 'M19 10h-5V5M14 10l5-5M10 5H5v14h14v-5',
   };
 
   // ── DOM helpers ──────────────────────────────────────────
@@ -205,7 +211,7 @@
         ui.data = null;
         ui.error = null;
         // Nothing to attach to without pairing; show why instead.
-        if (terminal) location.replace('#/');
+        if (fullTerminal()) location.replace('#/');
       } else {
         if (!response.ok) throw new Error(String(response.status));
         const data = await response.json();
@@ -301,7 +307,7 @@
     // DOM every poll is work nobody sees. route() repaints it on the way
     // back (render(true)), and the signature stays unset so that repaint
     // isn't skipped.
-    if (!force && terminal) { ui.signature = ''; return; }
+    if (!force && fullTerminal()) { ui.signature = ''; return; }
     ui.signature = signature;
     ui.paintedAt = Date.now();
 
@@ -331,7 +337,7 @@
     const all = data.projects.flatMap((p) => p.sessions).concat(data.elsewhere);
     const waiting = all.filter((s) => s.status === 'waiting').length;
     const busy = all.filter((s) => s.status === 'busy').length;
-    if (!terminal) document.title = `${waiting ? `(${waiting}) ` : ''}ClaudeShip — ${data.host}`;
+    updateTitle();
     hostEl.textContent = data.host;
     tallyEl.replaceChildren(
       waiting ? h('span', { class: 'pill waiting' }, h('span', { class: 'glyph waiting' }), `${waiting} need${waiting === 1 ? 's' : ''} you`) : '',
@@ -531,17 +537,31 @@
     }
   });
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && ui.menu && !terminal) {
+    if (event.key === 'Escape' && ui.menu && !fullTerminal()) {
       ui.menu = null;
       render(true);
     }
   });
 
-  // ── Terminal ─────────────────────────────────────────────
+  // ── Terminals ────────────────────────────────────────────
+  //
+  // Any number of sessions can be open at once, each its own xterm and
+  // WebSocket. A terminal is in one of four places: `full` (over the whole
+  // page — how a session opens, and the only mode on a phone), `float` (a
+  // window over the directory: dragged by its bar, resized by its corner,
+  // raised by a click), `min` (a chip in the dock along the bottom), or
+  // `popped` (its own browser window, with a placeholder chip here). The
+  // hub's size rules are per window, so the one that was last typed in,
+  // resized, or made full owns the session's size, as before.
 
   const encoder = new TextEncoder();
   const coarse = window.matchMedia('(pointer: coarse)').matches;
-  let terminal = null;
+  const terminals = new Map();  // hub id → terminal
+  // This page is a popped-out window for one session (#/s/<id>/pop).
+  const popped = location.hash.match(/^#\/s\/([0-9a-f]+)\/pop$/);
+  const popups = new Map();     // hub id → the window this page popped it into
+  let zTop = 100;
+  const LAYOUT_KEY = 'claudeship.windows';
 
   const THEME = {
     background: '#151413', foreground: '#e9e5de', cursor: '#e9e5de', cursorAccent: '#151413',
@@ -552,8 +572,14 @@
     brightBlue: '#8ebcf2', brightMagenta: '#d7a9e3', brightCyan: '#84d6d8', brightWhite: '#f5f2ec',
   };
 
-  function openTerminal(id) {
-    closeTerminal();
+  const fullTerminal = () => [...terminals.values()].find((t) => t.mode === 'full') || null;
+  const sameGrid = (a, b) => Boolean(a && b && a.rows === b.rows && a.cols === b.cols);
+
+  /** Build a terminal for a session and connect it. `mode` is where it goes. */
+  function createTerminal(id, mode, geometry) {
+    const existing = terminals.get(id);
+    if (existing) { setMode(existing, mode); return existing; }
+
     const host = h('div', { class: 'term-host' });
     const note = h('div', { class: 'term-note', hidden: true });
     const over = h('div', { class: 'term-over', hidden: true });
@@ -571,8 +597,6 @@
       // Keep focus (and the on-screen keyboard) on the terminal.
       onpointerdown: (event) => event.preventDefault(),
       onclick: () => {
-        const t = terminal;
-        if (!t) return;
         const arrow = sequence.length === 1 && 'ABCD'.includes(sequence);
         send(encoder.encode(arrow
           ? (t.term.modes.applicationCursorKeysMode ? '\x1bO' : '\x1b[') + sequence
@@ -580,15 +604,30 @@
         t.term.focus();
       },
     }, label)));
-    const page = h('div', { class: 'term-page' },
-      h('div', { class: 'term-bar' },
-        h('button', { class: 'icon-btn', 'aria-label': 'Back to projects', onclick: leaveTerminal }, icon('left')),
-        h('div', { class: 'term-id' }, glyph, h('div', { class: 'term-names' }, project, title)),
-        state, end),
+    const control = (name, label, action) => h('button', {
+      class: `win-btn ${name}`, 'aria-label': label, title: label,
+      onpointerdown: (event) => event.stopPropagation(),  // not a drag
+      onclick: action,
+    }, icon(name));
+    const back = h('button', { class: 'icon-btn back', 'aria-label': 'Back to projects', onclick: () => leaveTerminal(t) }, icon('left'));
+    const controls = h('div', { class: 'win-controls' },
+      popped ? [] : [
+        control('minimize', 'Minimize', () => setMode(t, 'min')),
+        control('window', 'Window', () => setMode(t, 'float')),
+        control('maximize', 'Full screen', () => setMode(t, 'full')),
+        control('popout', 'Pop out into its own window', () => popOut(t)),
+      ],
+      popped && window.opener ? control('popin', 'Pop back into the main window', () => popIn()) : [],
+      control('close', 'Close (the session keeps running)', () => leaveTerminal(t)));
+    const bar = h('div', { class: 'term-bar' },
+      back,
+      h('div', { class: 'term-id' }, glyph, h('div', { class: 'term-names' }, project, title)),
+      state, end, controls);
+    const page = h('div', { class: 'term-page', 'data-id': id },
+      bar,
       h('div', { class: 'term-body' }, host, note, over),
       keys);
     document.body.append(page);
-    directoryEl.hidden = true;
 
     const term = new Terminal({
       fontFamily: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace',
@@ -604,17 +643,19 @@
     term.loadAddon(fit);
     term.open(host);
 
-    terminal = {
-      id, term, fit, page, host, note, over, project, title, glyph, state, end,
+    const t = {
+      id, term, fit, page, bar, host, note, over, project, title, glyph, state, end,
+      mode: null,
+      geometry: geometry || null,  // {x, y, w, h} of the floating window
       socket: null, ended: false,
       own: null,      // the grid this window fits
       sent: null,     // the grid the hub was last told this window fits
       size: null,     // the grid the session actually has
       owner: false,   // whether the session is sized for this screen (the hub says)
       attempts: 0, refusals: 0, connected: false, timer: null, noteTimer: null, endArmed: null,
-      heard: Date.now(), pulse: null,
+      heard: Date.now(), pulse: null, resizeTimer: null, observer: null,
     };
-    const t = terminal;
+    terminals.set(id, t);
     term.onData((text) => send(encoder.encode(text)));
     term.onBinary((text) => send(Uint8Array.from(text, (c) => c.charCodeAt(0))));
 
@@ -640,16 +681,31 @@
       event.preventDefault();
     }, { passive: false });
 
-    layoutViewport();
-    measure();
+    // Floating: a click anywhere raises the window; the bar drags it.
+    page.addEventListener('pointerdown', () => raise(t), { capture: true });
+    bar.addEventListener('pointerdown', (event) => beginDrag(t, event));
+    // The corner grip (CSS resize) changes the box without a window
+    // resize event; the observer is how we hear about it.
+    t.observer = new ResizeObserver(() => {
+      if (t.mode !== 'float' || t.ended) return;
+      const rect = page.getBoundingClientRect();
+      if (!t.geometry || (rect.width === t.geometry.w && rect.height === t.geometry.h)) return;
+      t.geometry = { ...t.geometry, w: Math.round(rect.width), h: Math.round(rect.height) };
+      saveLayout();
+      clearTimeout(t.resizeTimer);
+      // A person resizing the window is taking the size for it.
+      t.resizeTimer = setTimeout(() => { measure(); claim(); }, 120);
+    });
+    t.observer.observe(page);
+
+    setMode(t, mode);
     connect();
     updateTerminalBar();
-    if (!coarse) term.focus();
 
     // The first measurement can run before the font has been measured;
     // take it again once layout and fonts have settled.
     const settle = () => {
-      if (terminal !== t || t.ended) return;
+      if (terminals.get(id) !== t || t.ended) return;
       measure();
       syncFit();
     };
@@ -659,300 +715,548 @@
     // A socket can die without saying so (a phone waking up on another
     // network). Ask for a pong now and then, and start over if none comes.
     t.pulse = setInterval(() => {
-      if (terminal !== t || t.ended || document.hidden) return;
+      if (terminals.get(id) !== t || t.ended || document.hidden) return;
       if (!t.socket || t.socket.readyState !== WebSocket.OPEN) return;
       if (Date.now() - t.heard > 45000) reconnectNow();
       else t.socket.send(JSON.stringify({ type: 'ping' }));
     }, 15000);
-  }
 
-  /** Back to the directory, without leaving the session one Back away. */
-  function leaveTerminal() {
-    // Only when this history entry was reached straight from the
-    // directory is "back" known to be the directory.
-    if (history.state && history.state.fromDirectory && history.length > 1) history.back();
-    else location.replace('#/');
-  }
+    // ── Everything below closes over `t` ──
 
-  /** Drop the current socket, whatever state it thinks it is in, and dial again. */
-  function reconnectNow() {
-    const t = terminal;
-    if (!t || t.ended) return;
-    clearTimeout(t.timer);
-    if (t.socket) {
-      t.socket.onclose = null;
-      t.socket.onmessage = null;
-      try { t.socket.close(); } catch { /* already gone */ }
-    }
-    t.attempts = 0;
-    t.refusals = 0;
-    setNote('Reconnecting…');
-    connect();
-  }
-
-  function closeTerminal() {
-    const t = terminal;
-    if (!t) return;
-    terminal = null;
-    clearTimeout(t.timer);
-    clearTimeout(t.noteTimer);
-    clearTimeout(t.endArmed);
-    clearInterval(t.pulse);
-    if (t.socket) t.socket.close();
-    t.term.dispose();
-    t.page.remove();
-    directoryEl.hidden = false;
-  }
-
-  /** The grid this window fits, whatever size the session currently is. */
-  function measure() {
-    const t = terminal;
-    if (!t) return;
-    const proposed = t.fit.proposeDimensions();
-    // A sliver (a phone on its side with the keyboard up) is not a size
-    // worth imposing on the session; keep the last real one.
-    if (proposed && proposed.rows >= 6 && proposed.cols >= 20) {
-      t.own = { rows: proposed.rows, cols: proposed.cols };
-    } else if (!t.own) {
-      t.own = { rows: 24, cols: 80 };
-    }
-  }
-
-  const sameGrid = (a, b) => Boolean(a && b && a.rows === b.rows && a.cols === b.cols);
-
-  function connect() {
-    const t = terminal;
-    if (!t || t.ended) return;
-    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-    // Opening a session sizes it for this window. Coming back after a
-    // dropped connection does not: the session may be in use on another
-    // screen by now, and typing here takes the size back soon enough. (If
-    // nobody else is attached, the hub hands it back anyway.)
-    const claiming = !t.connected && !document.hidden;
-    t.owner = claiming;  // until the hub's size message says how it went
-    t.sent = { ...t.own };
-    const socket = new WebSocket(
-      `${scheme}://${location.host}/ws/term?id=${encodeURIComponent(t.id)}`
-      + `&rows=${t.sent.rows}&cols=${t.sent.cols}&claim=${claiming ? 1 : 0}`);
-    socket.binaryType = 'arraybuffer';
-    t.socket = socket;
-    t.heard = Date.now();
-    let opened = false;
-    socket.onopen = () => {
-      if (terminal !== t) return;
-      opened = true;
+    /** Drop the current socket, whatever state it thinks it is in, and dial again. */
+    function reconnectNow() {
+      if (t.ended) return;
+      clearTimeout(t.timer);
+      if (t.socket) {
+        t.socket.onclose = null;
+        t.socket.onmessage = null;
+        try { t.socket.close(); } catch { /* already gone */ }
+      }
       t.attempts = 0;
       t.refusals = 0;
-      // A reconnect gets the whole replay again; start from a blank screen.
-      if (t.connected) t.term.reset();
-      t.connected = true;
-      setNote(null);
-      // The window may have changed (or only now been measurable) while
-      // the socket was still connecting, when nothing could be sent.
-      measure();
-      syncFit();
-    };
-    socket.onmessage = (event) => {
-      if (terminal !== t) return;
-      t.heard = Date.now();
-      if (typeof event.data !== 'string') {
-        t.term.write(new Uint8Array(event.data));
-        return;
-      }
-      let message;
-      try { message = JSON.parse(event.data); } catch { return; }
-      if (message.type === 'size') {
-        t.size = { rows: message.rows, cols: message.cols };
-        if (typeof message.owner === 'boolean') t.owner = message.owner;
-        applySize();
-      } else if (message.type === 'exit') {
-        finished('Session ended', message.code ? `Claude exited with code ${message.code}.` : 'Claude exited.');
-      } else if (message.type === 'gone') {
-        finished('Session not found', 'It has ended, or the hub was restarted.');
-      }
-    };
-    socket.onclose = () => {
-      if (terminal !== t || t.ended || t.socket !== socket) return;
-      // Never even opening, again and again, while the hub is otherwise
-      // answering is the hub saying no (not a flaky network): stop and say
-      // so rather than retry forever.
-      if (!opened && ui.data && !ui.error && ++t.refusals >= 5) {
-        setNote("Can't connect to this session", h('button', {
-          class: 'btn', onclick: () => { t.refusals = 0; t.attempts = 0; setNote('Reconnecting…'); connect(); },
-        }, 'Retry'));
-        return;
-      }
       setNote('Reconnecting…');
-      t.timer = setTimeout(connect, Math.min(5000, 400 * 2 ** t.attempts++));
-    };
-  }
+      connect();
+    }
 
-  /** The session is over (ended here, ended elsewhere, or gone): back to
-      the directory, with a word about what happened. */
-  function finished(heading, detail) {
-    const t = terminal;
-    if (!t) return;
-    t.ended = true;
-    setNote(null);
-    leaveTerminal();
-    notify(`${heading}. ${detail}`);
-    poll(true);
-  }
+    /** The grid this window fits, whatever size the session currently is. */
+    function measure() {
+      if (t.mode === 'min') return;  // nothing to measure while hidden
+      const proposed = t.fit.proposeDimensions();
+      // A sliver (a phone on its side with the keyboard up) is not a size
+      // worth imposing on the session; keep the last real one.
+      if (proposed && proposed.rows >= 6 && proposed.cols >= 20) {
+        t.own = { rows: proposed.rows, cols: proposed.cols };
+      } else if (!t.own) {
+        t.own = { rows: 24, cols: 80 };
+      }
+    }
 
-  function setNote(text, action) {
-    const t = terminal;
-    if (!t) return;
-    t.note.hidden = !text;
-    delete t.note.dataset.kind;
-    t.note.className = `term-note${action ? '' : ' plain'}`;
-    t.note.replaceChildren(text || '', action || '');
-  }
-
-  function send(bytes) {
-    const t = terminal;
-    if (!t || t.ended || !t.socket || t.socket.readyState !== WebSocket.OPEN) return;
-    // The hub decides whether this makes us the screen the session is
-    // sized for: keystrokes do, the terminal's own replies and focus
-    // reports don't.
-    t.socket.send(bytes);
-  }
-
-  /** Bring the hub up to date with what this window fits: resizing the
-      session if it is sized for this screen, just noting it otherwise (so
-      a later keystroke here claims the right size). */
-  function syncFit() {
-    const t = terminal;
-    if (!t || t.ended) return;
-    if (!sameGrid(t.own, t.sent) && t.socket && t.socket.readyState === WebSocket.OPEN) {
+    function connect() {
+      if (t.ended) return;
+      if (!t.own) measure();
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      // Opening a session sizes it for this window. Coming back after a
+      // dropped connection does not: the session may be in use on another
+      // screen by now, and typing here takes the size back soon enough. (If
+      // nobody else is attached, the hub hands it back anyway.)
+      const claiming = !t.connected && !document.hidden && t.mode !== 'min';
+      t.owner = claiming;  // until the hub's size message says how it went
       t.sent = { ...t.own };
-      t.socket.send(JSON.stringify({ type: t.owner ? 'resize' : 'fit', rows: t.own.rows, cols: t.own.cols }));
+      const socket = new WebSocket(
+        `${scheme}://${location.host}/ws/term?id=${encodeURIComponent(t.id)}`
+        + `&rows=${t.sent.rows}&cols=${t.sent.cols}&claim=${claiming ? 1 : 0}`);
+      socket.binaryType = 'arraybuffer';
+      t.socket = socket;
+      t.heard = Date.now();
+      let opened = false;
+      socket.onopen = () => {
+        if (terminals.get(id) !== t) return;
+        opened = true;
+        t.attempts = 0;
+        t.refusals = 0;
+        // A reconnect gets the whole replay again; start from a blank screen.
+        if (t.connected) t.term.reset();
+        t.connected = true;
+        setNote(null);
+        // The window may have changed (or only now been measurable) while
+        // the socket was still connecting, when nothing could be sent.
+        measure();
+        syncFit();
+      };
+      socket.onmessage = (event) => {
+        if (terminals.get(id) !== t) return;
+        t.heard = Date.now();
+        if (typeof event.data !== 'string') {
+          t.term.write(new Uint8Array(event.data));
+          return;
+        }
+        let message;
+        try { message = JSON.parse(event.data); } catch { return; }
+        if (message.type === 'size') {
+          t.size = { rows: message.rows, cols: message.cols };
+          if (typeof message.owner === 'boolean') t.owner = message.owner;
+          applySize();
+        } else if (message.type === 'exit') {
+          finished('Session ended', message.code ? `Claude exited with code ${message.code}.` : 'Claude exited.');
+        } else if (message.type === 'gone') {
+          finished('Session not found', 'It has ended, or the hub was restarted.');
+        }
+      };
+      socket.onclose = () => {
+        if (terminals.get(id) !== t || t.ended || t.socket !== socket) return;
+        // Never even opening, again and again, while the hub is otherwise
+        // answering is the hub saying no (not a flaky network): stop and say
+        // so rather than retry forever.
+        if (!opened && ui.data && !ui.error && ++t.refusals >= 5) {
+          setNote("Can't connect to this session", h('button', {
+            class: 'btn', onclick: () => { t.refusals = 0; t.attempts = 0; setNote('Reconnecting…'); connect(); },
+          }, 'Retry'));
+          return;
+        }
+        setNote('Reconnecting…');
+        t.timer = setTimeout(connect, Math.min(5000, 400 * 2 ** t.attempts++));
+      };
     }
-    applySize();
-  }
 
-  /** Take the session's size for this screen. The hub always answers. */
-  function claim() {
-    const t = terminal;
-    if (!t || t.ended || !t.socket || t.socket.readyState !== WebSocket.OPEN) return;
-    measure();
-    t.sent = { ...t.own };
-    t.socket.send(JSON.stringify({ type: 'resize', rows: t.own.rows, cols: t.own.cols }));
-  }
-
-  /** Show the session at its real size: ours, or another screen's scaled to fit. */
-  function applySize() {
-    const t = terminal;
-    if (!t || !t.size) return;
-    const { rows, cols } = t.size;
-    if (t.term.rows !== rows || t.term.cols !== cols) t.term.resize(cols, rows);
-    requestAnimationFrame(rescale);
-    clearTimeout(t.noteTimer);
-    const foreign = !t.owner && !sameGrid(t.size, t.own);
-    if (!foreign) {
-      if (!t.note.hidden && t.note.dataset.kind === 'size') setNote(null);
-      return;
+    /** The session is over (ended here, ended elsewhere, or gone): the
+        window goes, with a word about what happened. */
+    function finished(heading, detail) {
+      if (t.ended) return;
+      t.ended = true;
+      setNote(null);
+      const wasFull = t.mode === 'full';
+      disposeTerminal(t);
+      if (wasFull) leaveFull();
+      notify(`${heading}. ${detail}`);
+      poll(true);
     }
-    // After a beat, so a size in flight doesn't flash the note — and only
-    // over a live connection, never over "Reconnecting…" or a give-up.
-    t.noteTimer = setTimeout(() => {
-      if (terminal !== t || t.ended || t.owner || sameGrid(t.size, t.own)) return;
-      if (!t.socket || t.socket.readyState !== WebSocket.OPEN) return;
-      if (!t.note.hidden && t.note.dataset.kind !== 'size') return;
-      setNote(`Sized for another screen (${cols}×${rows})`,
-        h('button', { class: 'btn', onclick: () => { claim(); t.term.focus(); } }, 'Fit here'));
-      t.note.dataset.kind = 'size';
-    }, 500);
-  }
 
-  function rescale() {
-    const t = terminal;
-    if (!t) return;
-    t.host.style.transform = '';
-    // Measured, not inferred from the grids: a window too small to be worth
-    // sizing the session for (a sliver beside a phone keyboard) still has
-    // to show the whole screen, prompt included.
-    const screen = t.host.querySelector('.xterm-screen');
-    if (!screen || !screen.offsetWidth || !screen.offsetHeight) return;
-    const scale = Math.min(1, t.host.clientWidth / screen.offsetWidth, t.host.clientHeight / screen.offsetHeight);
-    if (scale < 1) t.host.style.transform = `scale(${scale})`;
-  }
+    function setNote(text, action) {
+      t.note.hidden = !text;
+      delete t.note.dataset.kind;
+      t.note.className = `term-note${action ? '' : ' plain'}`;
+      t.note.replaceChildren(text || '', action || '');
+    }
 
-  async function endSession() {
-    const t = terminal;
-    if (!t || t.ended) return;
-    if (!t.endArmed) {
-      t.end.textContent = 'End session?';
-      t.end.classList.add('confirm');
-      t.endArmed = setTimeout(() => {
-        t.endArmed = null;
+    function send(bytes) {
+      if (t.ended || !t.socket || t.socket.readyState !== WebSocket.OPEN) return;
+      // The hub decides whether this makes us the screen the session is
+      // sized for: keystrokes do, the terminal's own replies and focus
+      // reports don't.
+      t.socket.send(bytes);
+    }
+
+    /** Bring the hub up to date with what this window fits: resizing the
+        session if it is sized for this screen, just noting it otherwise (so
+        a later keystroke here claims the right size). */
+    function syncFit() {
+      if (t.ended || t.mode === 'min') return;
+      if (!sameGrid(t.own, t.sent) && t.socket && t.socket.readyState === WebSocket.OPEN) {
+        t.sent = { ...t.own };
+        t.socket.send(JSON.stringify({ type: t.owner ? 'resize' : 'fit', rows: t.own.rows, cols: t.own.cols }));
+      }
+      applySize();
+    }
+
+    /** Take the session's size for this window. The hub always answers. */
+    function claim() {
+      if (t.ended || t.mode === 'min' || !t.socket || t.socket.readyState !== WebSocket.OPEN) return;
+      measure();
+      t.sent = { ...t.own };
+      t.socket.send(JSON.stringify({ type: 'resize', rows: t.own.rows, cols: t.own.cols }));
+    }
+
+    /** Show the session at its real size: ours, or another screen's scaled to fit. */
+    function applySize() {
+      if (!t.size) return;
+      const { rows, cols } = t.size;
+      if (t.term.rows !== rows || t.term.cols !== cols) t.term.resize(cols, rows);
+      requestAnimationFrame(rescale);
+      clearTimeout(t.noteTimer);
+      const foreign = !t.owner && !sameGrid(t.size, t.own);
+      if (!foreign) {
+        if (!t.note.hidden && t.note.dataset.kind === 'size') setNote(null);
+        return;
+      }
+      // After a beat, so a size in flight doesn't flash the note — and only
+      // over a live connection, never over "Reconnecting…" or a give-up.
+      t.noteTimer = setTimeout(() => {
+        if (t.ended || t.owner || sameGrid(t.size, t.own)) return;
+        if (!t.socket || t.socket.readyState !== WebSocket.OPEN) return;
+        if (!t.note.hidden && t.note.dataset.kind !== 'size') return;
+        setNote(`Sized for another screen (${cols}×${rows})`,
+          h('button', { class: 'btn', onclick: () => { claim(); t.term.focus(); } }, 'Fit here'));
+        t.note.dataset.kind = 'size';
+      }, 500);
+    }
+
+    function rescale() {
+      t.host.style.transform = '';
+      // Measured, not inferred from the grids: a window too small to be worth
+      // sizing the session for (a sliver beside a phone keyboard) still has
+      // to show the whole screen, prompt included.
+      const screen = t.host.querySelector('.xterm-screen');
+      if (!screen || !screen.offsetWidth || !screen.offsetHeight) return;
+      const scale = Math.min(1, t.host.clientWidth / screen.offsetWidth, t.host.clientHeight / screen.offsetHeight);
+      if (scale < 1) t.host.style.transform = `scale(${scale})`;
+    }
+
+    async function endSession() {
+      if (t.ended) return;
+      if (!t.endArmed) {
+        t.end.textContent = 'End session?';
+        t.end.classList.add('confirm');
+        t.endArmed = setTimeout(() => {
+          t.endArmed = null;
+          t.end.textContent = 'End';
+          t.end.classList.remove('confirm');
+        }, 3000);
+        return;
+      }
+      clearTimeout(t.endArmed);
+      t.end.disabled = true;
+      t.endArmed = null;
+      try {
+        await post('/api/kill', { id: t.id });
+      } catch {
+        if (terminals.get(id) !== t) return;
+        t.end.disabled = false;
         t.end.textContent = 'End';
         t.end.classList.remove('confirm');
-      }, 3000);
-      return;
-    }
-    clearTimeout(t.endArmed);
-    t.end.disabled = true;
-    t.endArmed = null;
-    try {
-      await post('/api/kill', { id: t.id });
-    } catch {
-      if (terminal !== t) return;
-      t.end.disabled = false;
-      t.end.textContent = 'End';
-      t.end.classList.remove('confirm');
-      setNote("Couldn't end the session");
-    }
-  }
-
-  function updateTerminalBar() {
-    const t = terminal;
-    if (!t || !ui.data) return;
-    let found = null;
-    let owner = null;
-    for (const project of ui.data.projects) {
-      for (const session of project.sessions) {
-        if (session.hubId === t.id) { found = session; owner = project; }
+        setNote("Couldn't end the session");
       }
     }
-    if (!found) found = ui.data.elsewhere.find((s) => s.hubId === t.id) || null;
-    if (!found) return;
-    t.project.textContent = owner ? owner.name : tilde(found.cwd, ui.data);
-    t.title.textContent = found.title || '';
-    t.title.hidden = !found.title;
-    t.glyph.className = `glyph ${found.status}`;
-    t.state.className = `term-state ${found.status}`;
-    t.state.replaceChildren(STATUS[found.status] || found.status,
-      found.since ? h('span', { class: 'long' }, ` · ${age(found.since)}`) : '');
-    document.title = `${found.status === 'waiting' ? '(!) ' : ''}${found.title || t.project.textContent} — ClaudeShip`;
+
+    /** The page is back (online, visible): make sure the socket is really alive. */
+    function revive() {
+      if (t.ended) return;
+      if (!t.socket || t.socket.readyState !== WebSocket.OPEN) {
+        reconnectNow();
+      } else {
+        // Time spent in the background doesn't count against the socket —
+        // but a socket that died while we were away still says OPEN, so
+        // give it one ping's worth of benefit of the doubt, not a minute's.
+        const asked = Date.now();
+        t.heard = asked;
+        t.socket.send(JSON.stringify({ type: 'ping' }));
+        setTimeout(() => { if (terminals.get(id) === t && !t.ended && t.heard <= asked) reconnectNow(); }, 5000);
+      }
+    }
+
+    /** The window changed shape by itself (browser resize, mode change). */
+    function refit(claiming) {
+      if (t.ended || t.mode === 'min') return;
+      measure();
+      if (claiming) claim(); else syncFit();
+    }
+
+    t.api = { measure, syncFit, claim, applySize, rescale, revive, refit, reconnectNow };
+    return t;
   }
 
-  window.addEventListener('online', () => reviveTerminal());
-  function reviveTerminal() {
-    const t = terminal;
-    if (!t || t.ended) return;
-    if (!t.socket || t.socket.readyState !== WebSocket.OPEN) {
-      reconnectNow();
+  /** Detach and remove a terminal; the session keeps running. */
+  function disposeTerminal(t) {
+    if (terminals.get(t.id) !== t) return;
+    terminals.delete(t.id);
+    clearTimeout(t.timer);
+    clearTimeout(t.noteTimer);
+    clearTimeout(t.endArmed);
+    clearTimeout(t.resizeTimer);
+    clearInterval(t.pulse);
+    if (t.observer) t.observer.disconnect();
+    if (t.socket) { t.socket.onclose = null; t.socket.close(); }
+    t.term.dispose();
+    t.page.remove();
+    saveLayout();
+    renderDock();
+    updateTitle();
+  }
+
+  // ── Window modes ──
+
+  function setMode(t, mode) {
+    if (t.ended) return;
+    if (mode === 'float' && !floatingAllowed()) mode = 'full';
+    if (mode === 'full' && !t.geometry) t.geometry = nextGeometry();
+    const previous = t.mode;
+    if (mode === 'full' && previous !== 'full') t.before = previous;  // what Back returns it to
+    if (mode === previous) { if (mode === 'float') raise(t); return; }
+    const other = fullTerminal();
+    if (mode === 'full' && other && other !== t) setMode(other, 'float');
+    t.mode = mode;
+    t.page.className = `term-page ${mode}`;
+    t.page.hidden = mode === 'min';
+    if (mode === 'float') {
+      if (!t.geometry) t.geometry = nextGeometry();
+      placeWindow(t);
+      raise(t);
     } else {
-      // Time spent in the background doesn't count against the socket —
-      // but a socket that died while we were away still says OPEN, so
-      // give it one ping's worth of benefit of the doubt, not a minute's.
-      const asked = Date.now();
-      t.heard = asked;
-      t.socket.send(JSON.stringify({ type: 'ping' }));
-      setTimeout(() => { if (terminal === t && !t.ended && t.heard <= asked) reconnectNow(); }, 5000);
+      t.page.style.cssText = '';
     }
+    if (mode === 'full') {
+      layoutViewport();
+      t.page.style.zIndex = 1000;
+      if (location.hash !== `#/s/${t.id}` && !popped) {
+        // Stamp the entry with how it was reached, as route() does.
+        history.pushState({ fromDirectory: directoryShown }, '', `#/s/${t.id}`);
+      }
+      directoryEl.hidden = true;
+    } else if (previous === 'full' || !previous) {
+      leaveFull();
+    }
+    saveLayout();
+    renderDock();
+    updateTitle();
+    if (mode !== 'min') {
+      // Entering a mode is the person choosing this window: it takes the
+      // size. (On a minimized window there is nothing to size for.)
+      requestAnimationFrame(() => { t.api.refit(true); if (!coarse) t.term.focus(); });
+    }
+  }
+
+  /** The full-screen terminal is gone: the directory is the page again
+      (or, in a popped-out window, nothing is — close it). */
+  function leaveFull() {
+    if (fullTerminal()) return;
+    if (popped) { window.close(); }
+    directoryEl.hidden = false;
+    if (location.hash.startsWith('#/s/') && !popped) location.replace('#/');
+    render(true);
+    updateTitle();
+  }
+
+  function raise(t) {
+    if (t.mode !== 'float') return;
+    zTop += 1;
+    t.page.style.zIndex = zTop;
+  }
+
+  function placeWindow(t) {
+    const g = t.geometry;
+    const maxW = Math.max(320, window.innerWidth - 16);
+    const maxH = Math.max(200, window.innerHeight - 16);
+    g.w = Math.min(Math.max(320, g.w), maxW);
+    g.h = Math.min(Math.max(200, g.h), maxH);
+    g.x = Math.min(Math.max(0, g.x), window.innerWidth - g.w);
+    g.y = Math.min(Math.max(0, g.y), window.innerHeight - g.h);
+    t.page.style.left = `${g.x}px`;
+    t.page.style.top = `${g.y}px`;
+    t.page.style.width = `${g.w}px`;
+    t.page.style.height = `${g.h}px`;
+  }
+
+  /** Where a new window lands: cascaded from the top-left, within the page. */
+  function nextGeometry() {
+    const n = [...terminals.values()].filter((t) => t.mode === 'float').length;
+    const width = Math.min(760, Math.max(320, window.innerWidth - 80));
+    const height = Math.min(520, Math.max(200, window.innerHeight - 120));
+    return { x: 40 + 28 * (n % 8), y: 72 + 28 * (n % 8), w: width, h: height };
+  }
+
+  /** Floating windows need a pointer and room; a phone gets full screen. */
+  const floatingAllowed = () => !coarse && window.innerWidth >= 720;
+
+  function beginDrag(t, event) {
+    if (t.mode !== 'float' || event.button !== 0) return;
+    if (event.target.closest('button, .term-state')) return;
+    const start = { x: event.clientX, y: event.clientY, gx: t.geometry.x, gy: t.geometry.y };
+    const bar = t.bar;
+    bar.setPointerCapture(event.pointerId);
+    bar.classList.add('dragging');
+    const move = (e) => {
+      t.geometry.x = start.gx + (e.clientX - start.x);
+      t.geometry.y = start.gy + (e.clientY - start.y);
+      placeWindow(t);
+    };
+    const stop = () => {
+      bar.classList.remove('dragging');
+      bar.removeEventListener('pointermove', move);
+      bar.removeEventListener('pointerup', stop);
+      bar.removeEventListener('pointercancel', stop);
+      saveLayout();
+      t.term.focus();
+    };
+    bar.addEventListener('pointermove', move);
+    bar.addEventListener('pointerup', stop);
+    bar.addEventListener('pointercancel', stop);
+    event.preventDefault();
+  }
+
+  /** Close this window: back to the directory if it was full. The session runs on. */
+  function leaveTerminal(t) {
+    const wasFull = t.mode === 'full';
+    disposeTerminal(t);
+    if (!wasFull) return;
+    // Only when this history entry was reached straight from the
+    // directory is "back" known to be the directory.
+    if (popped) { window.close(); leaveFull(); return; }
+    if (history.state && history.state.fromDirectory && history.length > 1) history.back();
+    else leaveFull();
+  }
+
+  // ── Pop out / in ──
+
+  function popOut(t) {
+    const g = t.geometry || nextGeometry();
+    const features = `popup=yes,width=${g.w},height=${g.h + 44},left=${window.screenX + g.x},top=${window.screenY + g.y}`;
+    const url = `${location.origin}${location.pathname}#/s/${t.id}/pop`;
+    const popup = window.open(url, `claudeship-${t.id}`, features);
+    if (!popup) { notify('The browser blocked the window. Allow pop-ups for this page and try again.'); return; }
+    const id = t.id;
+    const wasFull = t.mode === 'full';
+    disposeTerminal(t);
+    popups.set(id, { win: popup, geometry: g, title: t.title.textContent, project: t.project.textContent });
+    if (wasFull) leaveFull();
+    renderDock();
+    // A popup closed by hand (the session keeps running) leaves no trace
+    // but its chip; notice and drop it.
+    const watch = setInterval(() => {
+      const entry = popups.get(id);
+      if (!entry || entry.win !== popup) { clearInterval(watch); return; }
+      if (popup.closed) { clearInterval(watch); popups.delete(id); renderDock(); }
+    }, 1000);
+  }
+
+  /** Bring a popped-out session back as a floating window here. */
+  function popBack(id) {
+    const entry = popups.get(id);
+    if (!entry) return;
+    popups.delete(id);
+    try { entry.win.close(); } catch { /* already gone */ }
+    createTerminal(id, 'float', entry.geometry);
+  }
+
+  /** From inside a popped-out window: ask the opener to take the session back. */
+  function popIn() {
+    const t = fullTerminal();
+    if (!t || !window.opener) return;
+    window.opener.postMessage({ type: 'claudeship-popin', id: t.id }, location.origin);
+    disposeTerminal(t);
+    window.close();
+  }
+
+  window.addEventListener('message', (event) => {
+    if (event.origin !== location.origin || !event.data || event.data.type !== 'claudeship-popin') return;
+    const entry = popups.get(event.data.id);
+    if (!entry || entry.win !== event.source) return;
+    popBack(event.data.id);
+  });
+
+  // ── Dock ──
+
+  const dockEl = h('div', { class: 'dock', hidden: true });
+  document.body.append(dockEl);
+
+  function renderDock() {
+    const chips = [];
+    for (const t of terminals.values()) {
+      if (t.mode === 'full') continue;
+      chips.push(h('button', {
+        class: `chip ${t.mode}`, 'data-key': `dock:${t.id}`,
+        title: t.mode === 'min' ? 'Restore' : 'Bring to front',
+        onclick: () => { setMode(t, 'float'); },
+      },
+        h('span', { class: `glyph ${t.glyph.className.replace('glyph', '').trim()}` }),
+        h('span', { class: 'chip-name' }, t.project.textContent),
+        t.title.textContent ? h('span', { class: 'chip-title' }, t.title.textContent) : '',
+        h('span', {
+          class: 'chip-x', role: 'button', 'aria-label': 'Close',
+          onclick: (event) => { event.stopPropagation(); leaveTerminal(t); },
+        }, icon('close'))));
+    }
+    for (const [id, entry] of popups) {
+      chips.push(h('button', {
+        class: 'chip popped', 'data-key': `dock:${id}`, title: 'Popped out — click to bring it back here',
+        onclick: () => popBack(id),
+      },
+        icon('popout'),
+        h('span', { class: 'chip-name' }, entry.project),
+        entry.title ? h('span', { class: 'chip-title' }, entry.title) : ''));
+    }
+    dockEl.hidden = chips.length === 0 || Boolean(fullTerminal());
+    document.body.classList.toggle('has-dock', !dockEl.hidden);
+    repaint(dockEl, chips);
+  }
+
+  // ── Layout persistence ──
+
+  function saveLayout() {
+    // Never from a screen without windows: it would overwrite the layout
+    // a wide one will want back.
+    if (popped || !floatingAllowed()) return;
+    const windows = [...terminals.values()]
+      .filter((t) => t.mode === 'float' || t.mode === 'min')
+      .map((t) => ({ id: t.id, mode: t.mode, ...t.geometry }));
+    try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(windows)); } catch { /* private mode */ }
+  }
+
+  function restoreLayout() {
+    // A phone (or a narrow window) has no windows to restore into; the
+    // saved layout waits for a screen that does.
+    if (popped || !floatingAllowed()) return;
+    let windows = [];
+    try { windows = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '[]'); } catch { return; }
+    for (const w of windows) {
+      if (typeof w.id !== 'string' || !/^[0-9a-f]+$/.test(w.id)) continue;
+      const geometry = [w.x, w.y, w.w, w.h].every(Number.isFinite) ? { x: w.x, y: w.y, w: w.w, h: w.h } : null;
+      createTerminal(w.id, w.mode === 'min' ? 'min' : 'float', geometry);
+    }
+  }
+
+  // ── Title bar text, page title ──
+
+  function updateTerminalBar() {
+    if (!ui.data) return;
+    for (const t of terminals.values()) {
+      let found = null;
+      let owner = null;
+      for (const project of ui.data.projects) {
+        for (const session of project.sessions) {
+          if (session.hubId === t.id) { found = session; owner = project; }
+        }
+      }
+      if (!found) found = ui.data.elsewhere.find((s) => s.hubId === t.id) || null;
+      if (!found) continue;
+      t.project.textContent = owner ? owner.name : tilde(found.cwd, ui.data);
+      t.title.textContent = found.title || '';
+      t.title.hidden = !found.title;
+      t.glyph.className = `glyph ${found.status}`;
+      t.state.className = `term-state ${found.status}`;
+      t.state.replaceChildren(STATUS[found.status] || found.status,
+        found.since ? h('span', { class: 'long' }, ` · ${age(found.since)}`) : '');
+      t.status = found.status;
+    }
+    renderDock();
+    updateTitle();
+  }
+
+  function updateTitle() {
+    const t = fullTerminal();
+    if (t) {
+      document.title = `${t.status === 'waiting' ? '(!) ' : ''}${t.title.textContent || t.project.textContent} — ClaudeShip`;
+    } else if (ui.data) {
+      const waiting = ui.data.projects.flatMap((p) => p.sessions).concat(ui.data.elsewhere)
+        .filter((s) => s.status === 'waiting').length;
+      document.title = `${waiting ? `(${waiting}) ` : ''}ClaudeShip — ${ui.data.host}`;
+    }
+  }
+
+  window.addEventListener('online', () => reviveTerminals());
+  function reviveTerminals() {
+    for (const t of terminals.values()) t.api.revive();
   }
 
   // ── Viewport, routing, polling ───────────────────────────
 
-  /** Keep the terminal inside what's actually visible — on a phone, the
-      part of the screen the keyboard leaves. */
+  /** Keep the full-screen terminal inside what's actually visible — on a
+      phone, the part of the screen the keyboard leaves. */
   function layoutViewport() {
     const viewport = window.visualViewport;
     const height = viewport ? viewport.height : window.innerHeight;
     document.documentElement.style.setProperty('--vh', `${height}px`);
-    if (terminal) {
-      terminal.page.style.top = `${viewport ? viewport.offsetTop : 0}px`;
+    const t = fullTerminal();
+    if (t) {
+      t.page.style.top = `${viewport ? viewport.offsetTop : 0}px`;
       window.scrollTo(0, 0);
     }
   }
@@ -965,10 +1269,13 @@
     layoutViewport();
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
-      const t = terminal;
-      if (!t || t.ended) return;
-      measure();
-      syncFit();
+      for (const t of terminals.values()) {
+        // Too narrow for windows now: they go to the dock, not full screen.
+        if (t.mode === 'float' && !floatingAllowed()) { setMode(t, 'min'); continue; }
+        if (t.mode === 'float') placeWindow(t);
+        t.api.refit(false);
+      }
+      renderDock();
     }, 90);
   }
   window.addEventListener('resize', onResize);
@@ -981,38 +1288,48 @@
   // so, the terminal's Back can simply go back to it.
   let directoryShown = false;
   function route() {
-    const match = location.hash.match(/^#\/s\/([0-9a-f]+)$/);
+    const match = location.hash.match(/^#\/s\/([0-9a-f]+)(\/pop)?$/);
     if (match) {
       // Stamp a new history entry with how it was reached; an entry come
       // back to (Back/Forward, reload) keeps the stamp it has.
       if (history.state == null) {
-        history.replaceState({ fromDirectory: directoryShown && !terminal }, '');
+        history.replaceState({ fromDirectory: directoryShown && !fullTerminal() }, '');
       }
-      if (!terminal || terminal.id !== match[1]) openTerminal(match[1]);
+      createTerminal(match[1], 'full');
     } else {
       directoryShown = true;
-      closeTerminal();
+      const t = fullTerminal();
+      // Back from a window made full returns it to its window, and from
+      // a dock chip made full (the phone's way) back to the dock: it was
+      // kept on purpose. From a session opened full, Back closes it.
+      if (t && t.before === 'min') setMode(t, 'min');
+      else if (t && t.before === 'float' && floatingAllowed()) setMode(t, 'float');
+      else if (t) disposeTerminal(t);
+      directoryEl.hidden = false;
       render(true);
+      updateTitle();
     }
   }
   window.addEventListener('hashchange', route);
 
-  // With a terminal open only its status bar needs the directory, and a
-  // slower poll keeps the hub's scan off the phone's radio.
+  // With a terminal over the page only its status bar needs the directory,
+  // and a slower poll keeps the hub's scan off the phone's radio.
   let pollTick = 0;
   setInterval(() => {
     if (document.hidden) return;
     pollTick += 1;
-    if (terminal && pollTick % 3 !== 0) return;
+    if (fullTerminal() && pollTick % 3 !== 0) return;
     poll(false);
   }, 2000);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
     poll(false);
-    reviveTerminal();
+    reviveTerminals();
   });
 
+  if (popped) document.body.classList.add('popped');
   layoutViewport();
+  restoreLayout();
   route();
   poll(true);
 })();
