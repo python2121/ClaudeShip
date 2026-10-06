@@ -57,17 +57,20 @@ if launchctl print "gui/${UID_NUM}/${LABEL}" >/dev/null 2>&1; then
 fi
 
 # Belt-and-braces — covers manually-launched instances not under launchd.
-if pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
+# Matched by the app's exact command line, never by process name: the hub
+# is the same binary under another name and must survive an install.
+APP_CMD="${DEST}/Contents/MacOS/${APP_NAME}"
+if pgrep -fx "${APP_CMD}" >/dev/null 2>&1; then
   echo "==> killing running ${APP_NAME}"
-  pkill -x "${APP_NAME}" || true
+  pkill -fx "${APP_CMD}" || true
   # Wait for it to actually exit before we overwrite the binary.
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -x "${APP_NAME}" >/dev/null 2>&1 || break
+    pgrep -fx "${APP_CMD}" >/dev/null 2>&1 || break
     sleep 0.2
   done
-  if pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
+  if pgrep -fx "${APP_CMD}" >/dev/null 2>&1; then
     echo "==> ${APP_NAME} didn't exit, sending SIGKILL"
-    pkill -9 -x "${APP_NAME}" || true
+    pkill -9 -fx "${APP_CMD}" || true
     sleep 0.5
   fi
 fi
@@ -116,7 +119,7 @@ fi
 # live sessions, and restarting it would end them; it keeps running the
 # previous build until `claudeship hub stop`. SKIP_HUB=1 opts out.
 if [[ "${SKIP_HUB:-0}" != "1" ]]; then
-  HUB_BIN="${DEST}/Contents/MacOS/claudeship"
+  HUB_BIN="${DEST}/Contents/MacOS/claudeship-cli"
   mkdir -p "${HOME}/.local/bin"
   ln -sf "${HUB_BIN}" "${HOME}/.local/bin/claudeship"
   echo "==> linked ${HOME}/.local/bin/claudeship"
@@ -127,10 +130,14 @@ if [[ "${SKIP_HUB:-0}" != "1" ]]; then
   fi
   "${HUB_BIN}" hub start || echo "WARNING: session hub did not start" >&2
   echo "==> to open the web app in a browser (or on the phone): claudeship hub link"
-  if ps -Ao command | grep -q "^/Applications/ClaudeStatus.app/.*hub run"; then
+  if ps -Ao command | grep "^/Applications/ClaudeStatus.app/.*hub run" >/dev/null; then  # not -q: pipefail + SIGPIPE
     echo "NOTE: the running hub is the old ClaudeStatus build, whose bundle is now gone;"
     echo "      its current sessions keep working, but new ones will fail to start until"
     echo "      you restart it (ends those sessions): claudeship hub stop && claudeship hub start"
+  elif ps -Ao command | grep "^${APP_CMD} --cli hub run" >/dev/null; then
+    echo "NOTE: the running hub was started under the app's own name (a build where the"
+    echo "      CLI copy collided with it); it keeps working, but restart it when its"
+    echo "      sessions are done so it runs as claudeship-cli: claudeship hub stop && claudeship hub start"
   fi
 fi
 
@@ -146,8 +153,8 @@ fi
 
 # Confirm it actually started.
 sleep 1
-if pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
-  echo "==> done — ${APP_NAME} running (pid $(pgrep -x ${APP_NAME}))"
+if pgrep -fx "${APP_CMD}" >/dev/null 2>&1; then
+  echo "==> done — ${APP_NAME} running (pid $(pgrep -fx "${APP_CMD}"))"
 else
   echo "WARNING: ${APP_NAME} doesn't appear to be running." >&2
   exit 1

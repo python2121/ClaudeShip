@@ -12,7 +12,7 @@ struct ClaudeShipMain {
         // belongs to claude — so this dispatch comes before any flag
         // checks. A dev build reaches the same code with `--cli`.
         let arguments = CommandLine.arguments
-        if let invokedAs = arguments.first, (invokedAs as NSString).lastPathComponent == HubCLI.commandName {
+        if let invokedAs = arguments.first, HubCLI.isCLIName((invokedAs as NSString).lastPathComponent) {
             HubCLI.run(Array(arguments.dropFirst()))
         }
         if arguments.count > 1, arguments[1] == "--cli" {

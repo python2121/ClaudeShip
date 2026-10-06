@@ -15,6 +15,16 @@ private var hubCLISignalPipe: Int32 = -1
 /// installed copy), or `ClaudeShip --cli …` (a dev build).
 enum HubCLI {
     static let commandName = "claudeship"
+    /// The bundle's copy of the binary that is the hub and the CLI. Not
+    /// `claudeship`: the filesystem is case-insensitive, so that would be
+    /// the menubar app's own `ClaudeShip` file — one file, and a hub whose
+    /// process name is the app's, which `install.sh` then kills.
+    static let binaryName = "claudeship-cli"
+    /// Whether a process started under this executable name is the CLI.
+    /// Exact match: the menubar app is `ClaudeShip`, one case-fold away.
+    static func isCLIName(_ name: String) -> Bool {
+        name == commandName || name == binaryName
+    }
 
     static func run(_ args: [String]) -> Never {
         if args.first == "hub" {

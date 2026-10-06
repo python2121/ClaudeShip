@@ -43,10 +43,11 @@ cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
 # The session hub and its terminal client are the same binary under another
 # name (App.main dispatches on argv[0]). A real copy rather than a symlink,
-# so the hub's process name is "claudeship" — install.sh restarts the
-# menubar app with `pkill -x ClaudeShip`, which must never take the hub
-# (and every session it owns) down with it.
-HUB_NAME="claudeship"
+# so the hub's process name differs from the menubar app's — install.sh
+# restarts the app by name, which must never take the hub (and every
+# session it owns) down with it. Not "claudeship": on a case-insensitive
+# filesystem that is the same file as "ClaudeShip".
+HUB_NAME="claudeship-cli"
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${HUB_NAME}"
 
 # The hub's web app: static files it serves from Resources/web.

@@ -630,6 +630,10 @@ enum SelfTest {
         t.expectEqual(Hub.exitCode(fromWaitStatus: SIGHUP), 129, "exit: killed by SIGHUP")
         t.expectEqual(Hub.exitCode(fromWaitStatus: SIGKILL | 0x80), 137, "exit: killed, core flag ignored")
 
+        t.expectEqual(HubCLI.isCLIName("claudeship"), true, "cli name: the command")
+        t.expectEqual(HubCLI.isCLIName("claudeship-cli"), true, "cli name: the bundle copy")
+        t.expectEqual(HubCLI.isCLIName("ClaudeShip"), false, "cli name: the app itself is not the CLI (case matters)")
+        t.expectEqual(HubCLI.isCLIName("Claudeship-cli"), false, "cli name: exact match only")
         t.expectEqual(HubCLI.bypassesHub([]), false, "cli: bare command is a session")
         t.expectEqual(HubCLI.bypassesHub(["fix the bug", "--model", "opus"]), false, "cli: a prompt is a session")
         t.expectEqual(HubCLI.bypassesHub(["--resume", "abc"]), false, "cli: resume is a session")

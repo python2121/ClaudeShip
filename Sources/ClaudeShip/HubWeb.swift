@@ -99,6 +99,13 @@ enum HubWebSecurity {
         return bytes
     }
 
+    /// Dotted or colon form of an address for the log.
+    static func describe(_ raw: [UInt8]) -> String {
+        let bytes = canonical(raw)
+        if bytes.count == 4 { return bytes.map(String.init).joined(separator: ".") }
+        return stride(from: 0, to: bytes.count, by: 2).map { String(format: "%x", Int(bytes[$0]) << 8 | Int(bytes[$0 + 1])) }.joined(separator: ":")
+    }
+
     static func isLoopback(_ raw: [UInt8]) -> Bool {
         let bytes = canonical(raw)
         if bytes.count == 4 { return bytes[0] == 127 }
@@ -511,6 +518,8 @@ final class HubWebServer {
         }
     }
 
+    private var lastRefusalLog = Date.distantPast
+
     private func acceptPending() {
         while true {
             var addr = sockaddr_storage()
@@ -528,6 +537,14 @@ final class HubWebServer {
             guard let remote = HubWebSecurity.addressBytes(peerOf: fd), let local = HubWebSecurity.addressBytes(localOf: fd),
                   HubWebSecurity.isAllowedPair(local: local, remote: remote, tunnel: HubWebSecurity.tunnelAddresses())
             else {
+                // Said once a minute, not per attempt: a refusal is the
+                // one thing a person debugging "can't connect" must see.
+                let now = Date()
+                if now.timeIntervalSince(lastRefusalLog) > 60 {
+                    lastRefusalLog = now
+                    let describe: ([UInt8]?) -> String = { $0.map(HubWebSecurity.describe) ?? "?" }
+                    HubLog.log("web: refused connection from \(describe(HubWebSecurity.addressBytes(peerOf: fd))) to \(describe(HubWebSecurity.addressBytes(localOf: fd))) (not loopback-to-loopback or tailnet-to-tunnel)")
+                }
                 close(fd)
                 continue
             }

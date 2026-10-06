@@ -24,7 +24,7 @@ enum HubPaths {
         var buffer = [CChar](repeating: 0, count: Int(size))
         guard _NSGetExecutablePath(&buffer, &size) == 0 else { return nil }
         let executable = URL(fileURLWithPath: String(cString: buffer)).resolvingSymlinksInPath().path
-        return (executable as NSString).lastPathComponent == HubCLI.commandName ? [executable] : [executable, "--cli"]
+        return HubCLI.isCLIName((executable as NSString).lastPathComponent) ? [executable] : [executable, "--cli"]
     }()
 
     static func ensureHome() {

@@ -92,7 +92,8 @@ struct PairView: View {
 extension HubError: Equatable {
     static func == (a: HubError, b: HubError) -> Bool {
         switch (a, b) {
-        case (.unpaired, .unpaired), (.unreachable, .unreachable): return true
+        case (.unpaired, .unpaired): return true
+        case (.unreachable(let x), .unreachable(let y)): return x == y
         case (.refused(let x), .refused(let y)): return x == y
         default: return false
         }

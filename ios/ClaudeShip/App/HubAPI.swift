@@ -72,14 +72,36 @@ enum PermissionMode {
 
 enum HubError: Error, LocalizedError {
     case unpaired
-    case unreachable
+    /// The transport failed; the detail says how, because "can't reach"
+    /// alone once hid a permission problem on the phone for a day.
+    case unreachable(String?)
     case refused(String)
 
     var errorDescription: String? {
         switch self {
         case .unpaired: return "This phone isn't paired with the hub."
-        case .unreachable: return "Can't reach the hub on the Mac."
+        case .unreachable(let detail):
+            return "Can't reach the hub on the Mac" + (detail.map { ": \($0)" } ?? ".")
         case .refused(let why): return why
+        }
+    }
+
+    /// What URLSession's error means for a person holding the phone.
+    static func unreachable(from error: Error) -> HubError {
+        let nsError = error as NSError
+        let posix = (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).flatMap { $0.domain == NSPOSIXErrorDomain ? $0.code : nil }
+        switch (nsError.domain, nsError.code, posix) {
+        case (NSURLErrorDomain, NSURLErrorTimedOut, _):
+            return .unreachable("no answer in time. Is Tailscale connected on both ends?")
+        case (NSURLErrorDomain, _, Int(EHOSTUNREACH)), (NSURLErrorDomain, _, Int(ENETUNREACH)),
+             (NSURLErrorDomain, _, Int(EPERM)), (NSURLErrorDomain, NSURLErrorNotConnectedToInternet, _):
+            return .unreachable("the phone can't route to it. Check that Tailscale is on and that Claude Ship is allowed Local Network access in Settings.")
+        case (NSURLErrorDomain, NSURLErrorCannotConnectToHost, _):
+            return .unreachable("the Mac refused the connection. Is the hub running (claudeship hub status)?")
+        case (NSURLErrorDomain, NSURLErrorNetworkConnectionLost, _):
+            return .unreachable("the Mac closed the connection without answering.")
+        default:
+            return .unreachable(nsError.localizedDescription)
         }
     }
 }
@@ -95,7 +117,7 @@ extension HubConnection {
         } catch let error as HubError {
             throw error
         } catch {
-            throw HubError.unreachable
+            throw HubError.unreachable(from: error)
         }
     }
 
@@ -140,7 +162,7 @@ extension HubConnection {
     /// Checks a pairing before it is kept: the state call either works or
     /// says why not.
     func probe(base: URL, token: String) async throws {
-        guard let url = URL(string: "/api/state", relativeTo: base) else { throw HubError.unreachable }
+        guard let url = URL(string: "/api/state", relativeTo: base) else { throw HubError.unreachable(nil) }
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("\(HubConnection.cookieName)=\(token)", forHTTPHeaderField: "Cookie")
