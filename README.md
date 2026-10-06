@@ -1,4 +1,4 @@
-# Claude Ship
+# ClaudeShip
 
 Run your [Claude Code](https://claude.com/claude-code) sessions from anywhere: a macOS menu bar app that shows what every session is doing, a session hub that lets one session be driven from your terminal, a browser, and your iPhone at the same time, and the clients to do it.
 

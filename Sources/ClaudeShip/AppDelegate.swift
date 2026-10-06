@@ -232,6 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showPanel() {
+        store.panelVisible = true
         // Size to the SwiftUI content's intrinsic size.
         hostingController.view.layoutSubtreeIfNeeded()
         var size = hostingController.view.fittingSize
@@ -326,6 +327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func closePanel() {
         guard panel.isVisible else { return }
+        store.panelVisible = false
         if let m = clickMonitor { NSEvent.removeMonitor(m); clickMonitor = nil }
         sizeObservation?.invalidate(); sizeObservation = nil
         statusItem.button?.highlight(false)
@@ -376,10 +378,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// (U+25D0–25D3), and font fallback served the left/right and top/bottom
     /// halves from different fonts at visibly different sizes. Drawing them
     /// keeps all frames (and ○/●) pixel-identical.
+    private var shownGlyph: (state: SessionStore.TrayState, frame: Int, invert: Bool)?
+
     private func updateStatusItemTitle() {
         guard let button = statusItem.button else { return }
         let state = store.trayState
         syncSpinner(with: state)
+        // Reassigning the same image still invalidates the button; skip it.
+        let glyph = (state, spinnerFrame, store.invertMenubarColors)
+        if let shownGlyph, shownGlyph == glyph { return }
+        shownGlyph = glyph
         button.image = Self.trayGlyphImage(
             state: state,
             spinnerFrame: spinnerFrame,

@@ -12,7 +12,11 @@ struct ClaudeShipApp: App {
         // way to tap "Open" on the custom-URL prompt from outside):
         //   -pair <pairing link>   pair before the first screen appears
         //   -session <hub id>      open straight onto that session
+        //   -expand <project name> start with that project's row expanded
         let arguments = CommandLine.arguments
+        if let i = arguments.firstIndex(of: "-expand"), i + 1 < arguments.count {
+            DirectoryView.initialExpanded = arguments[i + 1]
+        }
         if let i = arguments.firstIndex(of: "-pair"), i + 1 < arguments.count,
            let (base, token) = HubConnection.parse(link: arguments[i + 1]) {
             connection.pair(base: base, token: token)

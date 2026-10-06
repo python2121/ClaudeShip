@@ -97,7 +97,7 @@ enum HubState {
         // registry session with that pid nearest in its ancestry — nearest,
         // because a Claude started *inside* that session (by a tool call)
         // has the same supervisor further up.
-        let scanned = SessionScanner.scan()
+        let scanned = SessionScanner.scan(forHub: true)
         let hubPids = Set(hubSessions.map(\.pid))
         var owner: [pid_t: HubSessionSnapshot] = [:]
         var unmatched = hubSessions

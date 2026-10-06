@@ -1,5 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- ClaudeShip: a starship in Claude's colour, its exhaust the Claude
+       mark's burst of wedges. One drawing for the favicon, the page's
+       brand mark, and (rasterized by ios/make-icon.swift, which drops the
+       rounded corners since iOS masks icons itself) the iPhone icon. -->
   <rect width="64" height="64" rx="14" fill="#1a1917"/>
-  <circle cx="32" cy="32" r="15" fill="none" stroke="#58b77a" stroke-width="4"/>
-  <path d="M32 17a15 15 0 0 0 0 30z" fill="#58b77a"/>
+  <g fill="#d97757" stroke="#d97757" stroke-linejoin="round">
+    <path d="M32 6.5 C26.5 13.5 24 22 24 31 V40.5 Q32 43.5 40 40.5 V31 C40 22 37.5 13.5 32 6.5 Z" stroke-width="2"/>
+    <path d="M23.5 31.5 C20 35 17.5 39 16.5 44 L23.5 42 Z" stroke-width="1.6"/>
+    <path d="M40.5 31.5 C44 35 46.5 39 47.5 44 L40.5 42 Z" stroke-width="1.6"/>
+        <path d="M30.5 48.5 L30.9 59.0 L33.1 59.0 L33.5 48.5 Z" stroke-width="1.4"/>
+    <path d="M32.8 48.7 L37.6 56.3 L39.4 55.3 L35.2 47.3 Z" stroke-width="1.4"/>
+    <path d="M28.8 47.3 L24.6 55.3 L26.4 56.3 L31.2 48.7 Z" stroke-width="1.4"/>
+    <path d="M34.9 47.5 L41.5 50.6 L42.3 49.0 L36.1 45.2 Z" stroke-width="1.4"/>
+    <path d="M27.9 45.2 L21.7 49.0 L22.5 50.6 L29.1 47.5 Z" stroke-width="1.4"/>
+  </g>
+  <circle cx="32" cy="24.5" r="4" fill="#1a1917"/>
 </svg>

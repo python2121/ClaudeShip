@@ -1,7 +1,7 @@
 {
   "name": "claude-status-terminal-focus",
-  "displayName": "Claude Ship Terminal Focus",
-  "description": "Lets the Claude Ship menubar app bring the integrated terminal a Claude Code session runs in to the front.",
+  "displayName": "ClaudeShip Terminal Focus",
+  "description": "Lets the ClaudeShip menubar app bring the integrated terminal a Claude Code session runs in to the front.",
   "version": "0.1.0",
   "publisher": "claude-status",
   "license": "MIT",

@@ -52,6 +52,9 @@ cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${HUB_NAME}"
 
 # The hub's web app: static files it serves from Resources/web.
 cp -R web "${APP_DIR}/Contents/Resources/web"
+# The app icon (Finder, Open With…; the menubar glyph is drawn in code),
+# rendered from web/icon.svg by make-mac-icon.sh.
+cp assets/ClaudeShip.icns "${APP_DIR}/Contents/Resources/ClaudeShip.icns"
 
 cat >"${APP_DIR}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -61,11 +64,13 @@ cat >"${APP_DIR}/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key>
   <string>${APP_NAME}</string>
   <key>CFBundleDisplayName</key>
-  <string>Claude Ship</string>
+  <string>ClaudeShip</string>
   <key>CFBundleIdentifier</key>
   <string>${BUNDLE_ID}</string>
   <key>CFBundleExecutable</key>
   <string>${APP_NAME}</string>
+  <key>CFBundleIconFile</key>
+  <string>ClaudeShip</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -79,7 +84,7 @@ cat >"${APP_DIR}/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Claude Ship brings a session's terminal to the front when you click its row.</string>
+  <string>ClaudeShip brings a session's terminal to the front when you click its row.</string>
 </dict>
 </plist>
 PLIST

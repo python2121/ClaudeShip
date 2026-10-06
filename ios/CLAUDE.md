@@ -26,7 +26,7 @@ the Mac app's `@ViewState` rule does not apply.
 ./build.sh                 # simulator build (CODE_SIGNING_ALLOWED=NO)
 ./build.sh run             # …then install + launch on the booted simulator
 open ClaudeShip.xcodeproj   # device install: Run with the team under Signing
-swift ios/make-icon.swift  # from the repo root: regenerate the app icon
+swift ios/make-icon.swift  # from the repo root: regenerate the app icon from web/icon.svg
 ```
 
 **Device installs go through Xcode, not `xcodebuild`** (the Apple ID lives
@@ -52,8 +52,19 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
   control frames the other way. Size rules are the web page's (CLAUDE.md
   "One pty, one size"): any connect while the app is in front claims (background reconnects don't) and coming back to the foreground claims outright, `resize`
   when this screen owns the size and `fit` when it doesn't, a `size`
-  message with `owner:false` and a foreign grid shrinks the font so that
-  grid fits and shows "Fit here". Heartbeat `ping`/`pong` every 15 s;
+  message with `owner:false` and a foreign grid **mirrors** it: the view is
+  framed to precisely cols × rows cells inside a host view
+  (`TerminalContainer`/`TerminalSession.layout`) at the smallest font
+  (half-point steps, 5–12 pt) that overflows the room, then scaled down
+  with a transform to fill the limiting dimension exactly — cell sizes are
+  pixel-snapped, so no font size lands on the edge and the scale is what
+  closes the gap. Zoomed out, never reflowed, so bytes laid out for the
+  other screen land where it drew them. `cellSize(fontSize:)` replicates SwiftTerm's internal cell
+  computation (line height, "W" advance, pixel-snapped); keep them in
+  step if SwiftTerm changes. `measure()` derives this screen's own grid
+  from the host, not the terminal, which may be on the foreign grid.
+  "Fit here", typing, or coming to the front claims the size and the
+  normal font returns. Heartbeat `ping`/`pong` every 15 s;
   `revive()` on return to the foreground. `HubTerminalView` (a `TerminalView`
   subclass) owns scrolling while the program has mouse reporting on —
   Claude Code's full-screen TUI — where SwiftTerm would otherwise send a
@@ -64,9 +75,24 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
   `linesPerWheelTick` is the feel knob (1: measured, Claude Code scrolls one line per wheel event, answering in 3–26 ms on the Mac — what's left of the lag is the tailnet round trip, Claude's per-event redraw, and SwiftTerm's 60 fps coalescing). For truly local, native scrolling, a session can run Claude's classic non-fullscreen TUI (`/tui default` in the session, or `--settings '{"tui":"default"}'` at launch): the transcript then lives in the terminal's own scrollback. With reporting off, SwiftTerm's
   native scrollback scrolling is back. `KeyBar` is the row above the
   keyboard (esc, tab, ⇧tab, ^C, arrows, pgup/pgdn, ⏎); arrows honour
-  application-cursor mode.
+  application-cursor mode. A keyboard-down key is pinned at its left,
+  outside the scrolling row; it, a downward swipe on the bar, and
+  `keyboardDismissMode = .interactive` on the terminal (effective only
+  on the normal screen, where the scroll view's pan is live) all lower
+  the keyboard, and a tap on the terminal brings it back (SwiftTerm takes
+  focus on tap).
+- When the Mac stops answering, `HubStore.offline` turns on 5 s after
+  the first failed poll (`offlineAfter`; a success in between cancels it,
+  so one dropped poll on flaky Wi-Fi changes nothing) and the directory
+  swaps its rows for `OfflineNote` ("Can't connect to <host>"). The data
+  is kept, so the rows return the moment a poll succeeds. The clock is
+  cancelled when polling stops (background), so the app never wakes to
+  a stale "offline".
+- Directory rows show name, branch, and when; a project's conversations
+  appear only in its expanded resume list (`recentRows`). A running
+  project's card reaches that list through `EarlierRow`.
 - Launch arguments for a scripted simulator (there is no way to tap the
   custom-URL "Open?" prompt from outside): `-pair <link>`, `-session <hub
-  id>`; `SIMCTL_CHILD_CH_OFF=glyph,launch,header,tally` turns directory
+  id>`, `-expand <project name>`; `SIMCTL_CHILD_CH_OFF=glyph,launch,header,tally` turns directory
   pieces off for bisecting layout trouble. Screenshots:
   `xcrun simctl io booted screenshot x.png`.

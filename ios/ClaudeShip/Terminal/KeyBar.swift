@@ -1,7 +1,9 @@
 import UIKit
 
-/// The row of keys a phone keyboard lacks, shown above it.
-final class KeyBar: UIInputView {
+/// The row of keys a phone keyboard lacks, shown above it, with a
+/// keyboard-down key pinned at the left that stays put while the row
+/// scrolls. A downward swipe anywhere on the bar does the same.
+final class KeyBar: UIInputView, UIGestureRecognizerDelegate {
     enum Key: CaseIterable {
         case escape, tab, shiftTab, controlC, up, down, left, right, pageUp, pageDown, enter
 
@@ -40,10 +42,25 @@ final class KeyBar: UIInputView {
     }
 
     var onKey: ((Key) -> Void)?
+    /// Put the keyboard away.
+    var onDismiss: (() -> Void)?
+
+    private let swipe = UIPanGestureRecognizer()
+    private var swipeFired = false
 
     init() {
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: 44), inputViewStyle: .keyboard)
         allowsSelfSizing = true
+        // The same key as the others, with a symbol where the label goes;
+        // sized to the "esc" key below so the row reads as one set.
+        var hide = Self.keyConfiguration()
+        hide.image = UIImage(systemName: "keyboard.chevron.compact.down",
+                             withConfiguration: UIImage.SymbolConfiguration(font: Self.keyFont, scale: .default))
+        let hideButton = UIButton(configuration: hide)
+        hideButton.accessibilityLabel = "Hide keyboard"
+        hideButton.translatesAutoresizingMaskIntoConstraints = false
+        hideButton.addAction(UIAction { [weak self] _ in self?.onDismiss?() }, for: .touchUpInside)
+        addSubview(hideButton)
         let scroll = UIScrollView()
         scroll.showsHorizontalScrollIndicator = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -54,7 +71,9 @@ final class KeyBar: UIInputView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(stack)
         NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hideButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            hideButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            scroll.leadingAnchor.constraint(equalTo: hideButton.trailingAnchor, constant: 2),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             scroll.topAnchor.constraint(equalTo: topAnchor),
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -65,21 +84,64 @@ final class KeyBar: UIInputView {
             stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -5),
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -10),
         ])
+        var firstKey: UIButton?
         for key in Key.allCases {
-            var config = UIButton.Configuration.gray()
+            var config = Self.keyConfiguration()
             config.title = key.label
-            config.cornerStyle = .medium
-            config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 11, bottom: 4, trailing: 11)
-            config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
-                var attributes = attributes
-                attributes.font = UIFont.monospacedSystemFont(ofSize: 14, weight: .semibold)
-                return attributes
-            }
             let button = UIButton(configuration: config)
             button.addAction(UIAction { [weak self] _ in self?.onKey?(key) }, for: .touchUpInside)
             stack.addArrangedSubview(button)
+            if firstKey == nil { firstKey = button }
         }
+        if let firstKey {
+            NSLayoutConstraint.activate([
+                hideButton.widthAnchor.constraint(equalTo: firstKey.widthAnchor),
+                hideButton.heightAnchor.constraint(equalTo: firstKey.heightAnchor),
+            ])
+        }
+        swipe.addTarget(self, action: #selector(swiped(_:)))
+        swipe.delegate = self
+        addGestureRecognizer(swipe)
     }
 
     required init?(coder: NSCoder) { nil }
+
+    static let keyFont = UIFont.monospacedSystemFont(ofSize: 14, weight: .semibold)
+
+    /// One look for every key in the row.
+    static func keyConfiguration() -> UIButton.Configuration {
+        var config = UIButton.Configuration.gray()
+        config.cornerStyle = .medium
+        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 11, bottom: 4, trailing: 11)
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = keyFont
+            return attributes
+        }
+        return config
+    }
+
+    @objc private func swiped(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            swipeFired = false
+        case .changed:
+            guard !swipeFired, gesture.translation(in: self).y > 24 else { return }
+            swipeFired = true
+            onDismiss?()
+        default:
+            break
+        }
+    }
+
+    // Only a mostly-downward drag; sideways is the key row scrolling.
+    override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        guard gesture === swipe else { return true }
+        let v = swipe.velocity(in: self)
+        return v.y > 0 && v.y > abs(v.x) * 1.5
+    }
+
+    func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        gesture === swipe
+    }
 }

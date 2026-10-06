@@ -21,9 +21,9 @@
 		</dict>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Claude Ship talks to the session hub on your Mac over your Tailscale network.</string>
+	<string>ClaudeShip talks to the session hub on your Mac over your Tailscale network.</string>
 	<!-- Pairing: the QR code `claudeship hub link` prints on the Mac. -->
 	<key>NSCameraUsageDescription</key>
-	<string>Claude Ship scans the pairing QR code shown on your Mac.</string>
+	<string>ClaudeShip scans the pairing QR code shown on your Mac.</string>
 </dict>
 </plist>

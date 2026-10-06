@@ -1,4 +1,4 @@
-/* Claude Ship — the project directory and the browser terminal.
+/* ClaudeShip — the project directory and the browser terminal.
    Status colors match the ClaudeShip menubar glyphs: green half-disc
    while working, orange dot when a session needs you, hollow ring at rest. */
 
@@ -397,7 +397,7 @@ button.session:hover { background: var(--surface-2); }
 
 .row-main {
   display: grid;
-  grid-template-columns: minmax(150px, 1.1fr) minmax(0, 2fr) 104px auto;
+  grid-template-columns: minmax(0, 1fr) 104px auto;
   align-items: center;
   gap: 4px 18px;
   padding: 11px 12px 11px 18px;
@@ -411,12 +411,6 @@ button.session:hover { background: var(--surface-2); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .row-name .branch { flex: 0 1 auto; min-width: 0; }
-.row-last {
-  min-width: 0;
-  color: var(--dim); font-size: 13.5px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.row-last.none { color: var(--faint); }
 .row-when { color: var(--faint); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
 .row .recent { background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
 .row.open:last-child .recent { border-radius: 0 0 15px 15px; }
@@ -554,10 +548,9 @@ button.session:hover { background: var(--surface-2); }
   .tools { flex: 1 1 100%; order: 3; }
   .search { flex: 1; width: auto; max-width: none; }
   .page { padding-top: 18px; }
-  .row-main { grid-template-columns: minmax(0, 1fr) auto; padding-left: 14px; }
-  .row-last { grid-column: 1; grid-row: 2; font-size: 13px; }
-  .row-when { grid-column: 2; grid-row: 2; }
-  .row-main .launch { grid-column: 2; grid-row: 1; }
+  .row-main { grid-template-columns: minmax(0, 1fr) auto; padding-left: 14px; row-gap: 2px; }
+  .row-when { grid-column: 1; grid-row: 2; text-align: left; }
+  .row-main .launch { grid-column: 2; grid-row: 1 / span 2; }
   .card-head, .session, .card-foot { padding-left: 14px; padding-right: 14px; }
   .term-state .long { display: none; }
 }

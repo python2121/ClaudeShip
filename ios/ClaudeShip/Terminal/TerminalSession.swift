@@ -12,6 +12,8 @@ final class TerminalSession: NSObject, TerminalViewDelegate {
     let hubId: String
     private let connection: HubConnection
     @ObservationIgnored private weak var view: TerminalView?
+    /// The room the terminal has (TerminalContainer's host view).
+    @ObservationIgnored private weak var host: UIView?
 
     private(set) var note: String?
     private(set) var reconnecting = false
@@ -41,6 +43,16 @@ final class TerminalSession: NSObject, TerminalViewDelegate {
     /// refused while it isn't is a network problem, not the hub saying no.
     @ObservationIgnored var hubReachable: () -> Bool = { true }
     static let baseFontSize: CGFloat = 12
+    /// How far the font shrinks to mirror another screen's grid; past
+    /// this the view is scaled down instead (glyphs rasterized smaller
+    /// than this lose their shape, a scaled-down 5 pt keeps it). A wide
+    /// terminal ends up unreadable but whole and correct, which beats
+    /// clipping or wrapping it; sideways it is legible again.
+    static let minimumFontSize: CGFloat = 5
+    /// The font size, grid, and scale the view is currently laid out for.
+    @ObservationIgnored private var applied: (font: CGFloat, cols: Int, rows: Int, scale: CGFloat, room: CGSize, mirroring: Bool)?
+    /// The font size in force when mirroring (nil at the normal size).
+    private(set) var mirrorFontSize: CGFloat?
 
     init(hubId: String, connection: HubConnection) {
         self.hubId = hubId
@@ -49,13 +61,16 @@ final class TerminalSession: NSObject, TerminalViewDelegate {
 
     // MARK: Lifecycle
 
-    func attach(_ terminalView: TerminalView) {
+    func attach(_ terminalView: TerminalView, in hostView: UIView) {
         guard !closed else { return }
         if let old = view, old !== terminalView { old.terminalDelegate = nil }
         let first = view == nil
         view = terminalView
+        host = hostView
+        applied = nil
         terminalView.terminalDelegate = self
         measure()
+        layout()
         guard first else { return }  // SwiftUI rebuilt the view; the socket stays
         connect()
         let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
@@ -249,12 +264,101 @@ final class TerminalSession: NSObject, TerminalViewDelegate {
 
     // MARK: Size
 
-    /// The grid this screen fits. A sliver (landscape with the keyboard up)
+    /// The grid this screen fits at the normal font — computed from the
+    /// room, not read from the terminal, which may be laid out for another
+    /// screen's grid at the time. A sliver (landscape with the keyboard up)
     /// is not a size worth imposing on the session; keep the last real one.
     private func measure() {
-        guard let view else { return }
-        let dims = view.getTerminal().getDims()
-        if dims.cols >= 20, dims.rows >= 6 { own = (dims.cols, dims.rows) }
+        guard let host, host.bounds.width > 0, host.bounds.height > 0 else { return }
+        let dims = Self.grid(fitting: host.bounds.size, fontSize: Self.baseFontSize)
+        if dims.cols >= 20, dims.rows >= 6 { own = dims }
+    }
+
+    /// SwiftTerm's cell for a monospaced system font of this size: line
+    /// height and the advance of "W", each snapped to the pixel grid, the
+    /// way `computeFontDimensions` does it (internal to the package).
+    /// Memoized: `fit` asks for up to 15 sizes per layout, and layout runs
+    /// on every frame of a keyboard or rotation animation.
+    nonisolated(unsafe) private static var cellSizes: [CGFloat: CGSize] = [:]
+    static func cellSize(fontSize: CGFloat) -> CGSize {
+        if let hit = cellSizes[fontSize] { return hit }
+        let size = computeCellSize(fontSize: fontSize)
+        cellSizes[fontSize] = size
+        return size
+    }
+
+    private static func computeCellSize(fontSize: CGFloat) -> CGSize {
+        let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let height = ceil(CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font))
+        let width = "W".size(withAttributes: [.font: font]).width
+        let scale = UIScreen.main.scale
+        return CGSize(width: max(1, (width * scale).rounded() / scale), height: max(1, ceil(height * scale) / scale))
+    }
+
+    /// The grid SwiftTerm would derive for a view of this size and font.
+    static func grid(fitting size: CGSize, fontSize: CGFloat) -> (cols: Int, rows: Int) {
+        let cell = cellSize(fontSize: fontSize)
+        return (Int(size.width / cell.width), Int(size.height / cell.height))
+    }
+
+    /// How to show this grid in the room: the smallest font (half-point
+    /// steps from the floor up to the normal size) at which the grid
+    /// overflows the room, and the scale (≤ 1) that then makes it fit
+    /// exactly. Cell sizes are snapped to whole pixels, so no font size
+    /// lands the grid on the room's edge — with 155 columns each step is
+    /// a ~50 pt jump — and the scale is what fills the remaining width or
+    /// height; rendering a little large and shrinking keeps the glyphs
+    /// crisper than the other way round. A grid that fits at the normal
+    /// size is shown at it, unscaled.
+    static func fit(_ grid: (cols: Int, rows: Int), in room: CGSize) -> (fontSize: CGFloat, scale: CGFloat) {
+        var size = minimumFontSize
+        while size < baseFontSize {
+            let cell = cellSize(fontSize: size)
+            if CGFloat(grid.cols) * cell.width > room.width || CGFloat(grid.rows) * cell.height > room.height { break }
+            size += 0.5
+        }
+        let cell = cellSize(fontSize: size)
+        let scale = min(1, room.width / (CGFloat(grid.cols) * cell.width), room.height / (CGFloat(grid.rows) * cell.height))
+        return (size, scale)
+    }
+
+    /// Lay the terminal out for whoever owns the session's size. Ours: the
+    /// normal font, filling the room. Another screen's: that screen's exact
+    /// grid, at whatever font size makes it fit — zoomed out, never
+    /// reflowed, so the bytes the hub relays land where the other screen
+    /// drew them. Idempotent; called on every change of room or ownership.
+    func layout() {
+        guard let view, let host else { return }
+        let room = host.bounds.size
+        guard room.width > 0, room.height > 0 else { return }
+        let mirroring = !owner && sessionSize.cols >= 2 && sessionSize.rows >= 2
+            && (sessionSize.cols, sessionSize.rows) != (own.cols, own.rows)
+        // Nothing that feeds the layout changed: out before any measuring.
+        if let applied, applied.room == room, applied.mirroring == mirroring,
+           !mirroring || (applied.cols, applied.rows) == (sessionSize.cols, sessionSize.rows) { return }
+        let (fontSize, scale) = mirroring ? Self.fit(sessionSize, in: room) : (Self.baseFontSize, 1)
+        let target = mirroring ? sessionSize : Self.grid(fitting: room, fontSize: Self.baseFontSize)
+        if let applied, applied.font == fontSize, applied.cols == target.cols, applied.rows == target.rows,
+           applied.scale == scale, applied.room == room { return }
+        applied = (fontSize, target.cols, target.rows, scale, room, mirroring)
+        mirrorFontSize = mirroring ? fontSize : nil
+        if view.font.pointSize != fontSize {
+            view.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        }
+        view.transform = .identity
+        if mirroring {
+            // Exactly the grid: SwiftTerm floors width / cell width, so a
+            // hair over the last cell's edge rounds to the right count.
+            // Then shrunk about the top-left corner to fill the room.
+            let cell = Self.cellSize(fontSize: fontSize)
+            view.layer.anchorPoint = .zero
+            view.bounds = CGRect(x: 0, y: 0, width: CGFloat(target.cols) * cell.width + 0.5, height: CGFloat(target.rows) * cell.height + 0.5)
+            view.layer.position = .zero
+            view.transform = CGAffineTransform(scaleX: scale, y: scale)
+        } else {
+            view.layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            view.frame = host.bounds
+        }
     }
 
     /// Bring the hub up to date with what this screen fits: resizing the
@@ -265,21 +369,24 @@ final class TerminalSession: NSObject, TerminalViewDelegate {
         sendControl(["type": owner ? "resize" : "fit", "rows": own.rows, "cols": own.cols])
     }
 
-    /// Take the session's size for this screen. The hub always answers.
+    /// Take the session's size for this screen. The hub always answers, so
+    /// the view goes back to the normal font at once rather than a
+    /// round-trip later.
     func claim() {
         guard isOpen else { return }
         measure()
         sent = own
         sendControl(["type": "resize", "rows": own.rows, "cols": own.cols])
+        owner = true
+        sessionSize = own
+        applySize()
     }
 
-    /// The session's real size arrived. Unlike the web page, the phone
-    /// doesn't try to mirror another screen's grid (SwiftTerm derives its
-    /// grid from the view, so a scaled font can't reproduce one exactly);
-    /// it says whose size the session is and offers to take it. Output
-    /// laid out for the other grid may wrap until then.
+    /// The session's real size arrived, or whose it is changed: show that
+    /// grid, zoomed out if it isn't ours (`layout`), and say so.
     private func applySize() {
         foreignSize = !owner && (sessionSize.cols, sessionSize.rows) != (own.cols, own.rows) ? sessionSize : nil
+        layout()
     }
 
     // MARK: TerminalViewDelegate

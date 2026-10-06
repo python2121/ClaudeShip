@@ -110,7 +110,7 @@ enum ApprovalWire {
         if allow {
             return #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#
         }
-        return #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied via Claude Ship"}}}"#
+        return #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied via ClaudeShip"}}}"#
     }
 }
 

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - What /api/state describes
 
-struct HubState: Decodable {
+struct HubState: Decodable, Equatable {
     var host: String
     var root: String
     var rootDisplay: String
@@ -19,7 +19,7 @@ struct HubState: Decodable {
     var allSessions: [HubSession] { projects.flatMap(\.sessions) + elsewhere }
 }
 
-struct HubProject: Decodable, Identifiable {
+struct HubProject: Decodable, Identifiable, Equatable {
     var name: String
     var path: String
     var branch: String?
@@ -49,7 +49,7 @@ struct HubSession: Decodable, Identifiable, Equatable {
     var id: String { key }
 }
 
-struct HubConversation: Decodable, Identifiable {
+struct HubConversation: Decodable, Identifiable, Equatable {
     var sessionId: String
     var title: String
     var at: Int
@@ -95,7 +95,7 @@ enum HubError: Error, LocalizedError {
             return .unreachable("no answer in time. Is Tailscale connected on both ends?")
         case (NSURLErrorDomain, _, Int(EHOSTUNREACH)), (NSURLErrorDomain, _, Int(ENETUNREACH)),
              (NSURLErrorDomain, _, Int(EPERM)), (NSURLErrorDomain, NSURLErrorNotConnectedToInternet, _):
-            return .unreachable("the phone can't route to it. Check that Tailscale is on and that Claude Ship is allowed Local Network access in Settings.")
+            return .unreachable("the phone can't route to it. Check that Tailscale is on and that ClaudeShip is allowed Local Network access in Settings.")
         case (NSURLErrorDomain, NSURLErrorCannotConnectToHost, _):
             return .unreachable("the Mac refused the connection. Is the hub running (claudeship hub status)?")
         case (NSURLErrorDomain, NSURLErrorNetworkConnectionLost, _):

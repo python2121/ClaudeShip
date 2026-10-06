@@ -1,6 +1,6 @@
 {
-  "name": "Claude Ship",
-  "short_name": "Claude Ship",
+  "name": "ClaudeShip",
+  "short_name": "ClaudeShip",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#121110",

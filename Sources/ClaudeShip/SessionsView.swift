@@ -31,7 +31,8 @@ struct SessionsView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(width: 392, alignment: .leading)
-        .onReceive(tick) { now = $0 }
+        .onReceive(tick) { if store.panelVisible { now = $0 } }
+        .onChange(of: store.panelVisible) { visible in if visible { now = Date() } }
     }
 
     // MARK: Sections

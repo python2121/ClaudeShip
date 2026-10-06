@@ -1,4 +1,4 @@
-// Claude Ship web app: the project directory and the browser terminal.
+// ClaudeShip web app: the project directory and the browser terminal.
 // Plain JS, no build step. Everything shown comes from /api/state (polled)
 // and is put on the page with textContent/DOM nodes — never innerHTML —
 // because conversation titles and paths are text the page does not control.
@@ -171,7 +171,7 @@
       h('div', { class: 'top-inner' },
         h('div', { class: 'brand' },
           h('img', { class: 'brand-mark', src: '/icon.svg', alt: '' }),
-          h('span', { class: 'brand-name' }, 'Claude Ship'),
+          h('span', { class: 'brand-name' }, 'ClaudeShip'),
           hostEl),
         tallyEl,
         h('div', { class: 'tools' }, searchEl, settingsEl))),
@@ -297,6 +297,11 @@
     const held = ui.menu
       || (selection && !selection.isCollapsed && pageEl.contains(selection.anchorNode));
     if (!force && (signature === ui.signature || (held && Date.now() - ui.paintedAt < 20000))) return;
+    // Under an open terminal the directory is display:none; building its
+    // DOM every poll is work nobody sees. route() repaints it on the way
+    // back (render(true)), and the signature stays unset so that repaint
+    // isn't skipped.
+    if (!force && terminal) { ui.signature = ''; return; }
     ui.signature = signature;
     ui.paintedAt = Date.now();
 
@@ -326,7 +331,7 @@
     const all = data.projects.flatMap((p) => p.sessions).concat(data.elsewhere);
     const waiting = all.filter((s) => s.status === 'waiting').length;
     const busy = all.filter((s) => s.status === 'busy').length;
-    if (!terminal) document.title = `${waiting ? `(${waiting}) ` : ''}Claude Ship — ${data.host}`;
+    if (!terminal) document.title = `${waiting ? `(${waiting}) ` : ''}ClaudeShip — ${data.host}`;
     hostEl.textContent = data.host;
     tallyEl.replaceChildren(
       waiting ? h('span', { class: 'pill waiting' }, h('span', { class: 'glyph waiting' }), `${waiting} need${waiting === 1 ? 's' : ''} you`) : '',
@@ -472,7 +477,6 @@
 
   function row(project, data) {
     const open = ui.open.has(project.path);
-    const last = project.recent[0];
     const toggle = () => toggleOpen(project.path);
     return h('div', { class: `row${open ? ' open' : ''}` },
       h('div', {
@@ -487,8 +491,6 @@
         },
       },
         h('div', { class: 'row-name' }, h('b', null, project.name), project.branch && branchTag(project.branch)),
-        h('div', { class: `row-last${last ? '' : ' none'}` },
-          last ? last.title : project.lastActivity ? 'No summarized conversations' : 'Not used with Claude yet'),
         h('div', { class: 'row-when' }, project.lastActivity ? ago(project.lastActivity) : ''),
         launchControl(project, data, false)),
       open && recentList(project));
@@ -921,7 +923,7 @@
     t.state.className = `term-state ${found.status}`;
     t.state.replaceChildren(STATUS[found.status] || found.status,
       found.since ? h('span', { class: 'long' }, ` · ${age(found.since)}`) : '');
-    document.title = `${found.status === 'waiting' ? '(!) ' : ''}${found.title || t.project.textContent} — Claude Ship`;
+    document.title = `${found.status === 'waiting' ? '(!) ' : ''}${found.title || t.project.textContent} — ClaudeShip`;
   }
 
   window.addEventListener('online', () => reviveTerminal());
@@ -995,7 +997,15 @@
   }
   window.addEventListener('hashchange', route);
 
-  setInterval(() => { if (!document.hidden) poll(false); }, 2000);
+  // With a terminal open only its status bar needs the directory, and a
+  // slower poll keeps the hub's scan off the phone's radio.
+  let pollTick = 0;
+  setInterval(() => {
+    if (document.hidden) return;
+    pollTick += 1;
+    if (terminal && pollTick % 3 !== 0) return;
+    poll(false);
+  }, 2000);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
     poll(false);

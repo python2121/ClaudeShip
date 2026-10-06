@@ -1,48 +1,54 @@
 #!/usr/bin/env swift
-// Renders the iPhone app icon: the menubar app's "working" glyph — a green
-// half-disc inside a ring — on a dark ground, at 1024 px.
+// Renders the iPhone app icon from web/icon.svg — one drawing for every
+// surface — by rasterizing it in a WebKit view at 1024 px. The SVG's
+// rounded corners are dropped: iOS masks icons itself, so the output is a
+// full-bleed opaque square.
 //
-//   swift ios/make-icon.swift            # from the repo root
-//
-// iOS masks icons itself, so the output is a full-bleed opaque square.
-import CoreGraphics
-import Foundation
-import ImageIO
-import UniformTypeIdentifiers
+//   swift ios/make-icon.swift                      # from the repo root
+//   swift ios/make-icon.swift out.png --rounded    # keep the corners (macOS icns source)
+import AppKit
+import WebKit
 
-let size = 1024
-let out = URL(fileURLWithPath: CommandLine.arguments.count > 1
-    ? CommandLine.arguments[1]
-    : "ios/ClaudeShip/Assets.xcassets/AppIcon.appiconset/AppIcon.png")
+let arguments = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("--") }
+let rounded = CommandLine.arguments.contains("--rounded")
+let out = URL(fileURLWithPath: arguments.first ?? "ios/ClaudeShip/Assets.xcassets/AppIcon.appiconset/AppIcon.png")
+let svgPath = "web/icon.svg"
+guard var svg = try? String(contentsOfFile: svgPath, encoding: .utf8) else {
+    fatalError("run from the repo root: \(svgPath) not found")
+}
+if !rounded { svg = svg.replacingOccurrences(of: #"rx="14""#, with: #"rx="0""#) }
+let side: CGFloat = 512  // points; the snapshot is scaled to 1024 px below
+let html = "<body style='margin:0;background:\(rounded ? "transparent" : "#1a1917")'>"
+    + svg.replacingOccurrences(of: "<svg ", with: "<svg width='\(Int(side))' height='\(Int(side))' style='display:block' ")
+    + "</body>"
 
-let space = CGColorSpace(name: CGColorSpace.sRGB)!
-let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
-                    bytesPerRow: 0, space: space,
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-let s = CGFloat(size)
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: side, height: side),
+                      styleMask: [.borderless], backing: .buffered, defer: false)
+let web = WKWebView(frame: NSRect(x: 0, y: 0, width: side, height: side))
+if rounded { web.setValue(false, forKey: "drawsBackground") }  // transparent outside the corners
+window.contentView = web
+window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) - 1)
+window.orderFrontRegardless()
+web.loadHTMLString(html, baseURL: nil)
 
-// Ground: the terminal's near-black, a little warmer at the top.
-let gradient = CGGradient(colorsSpace: space, colors: [
-    CGColor(srgbRed: 0.16, green: 0.155, blue: 0.145, alpha: 1),
-    CGColor(srgbRed: 0.07, green: 0.068, blue: 0.064, alpha: 1),
-] as CFArray, locations: [0, 1])!
-ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: s), end: CGPoint(x: 0, y: 0), options: [])
-
-let green = CGColor(srgbRed: 0.345, green: 0.718, blue: 0.478, alpha: 1)
-let center = CGPoint(x: s / 2, y: s / 2)
-let radius = s * 0.28
-ctx.setStrokeColor(green)
-ctx.setLineWidth(s * 0.055)
-ctx.addArc(center: center, radius: radius, startAngle: 0, endAngle: 2 * .pi, clockwise: false)
-ctx.strokePath()
-ctx.setFillColor(green)
-ctx.move(to: center)
-ctx.addArc(center: center, radius: radius, startAngle: .pi / 2, endAngle: 3 * .pi / 2, clockwise: false)
-ctx.closePath()
-ctx.fillPath()
-
-let image = ctx.makeImage()!
-let dest = CGImageDestinationCreateWithURL(out as CFURL, UTType.png.identifier as CFString, 1, nil)!
-CGImageDestinationAddImage(dest, image, nil)
-guard CGImageDestinationFinalize(dest) else { fatalError("could not write \(out.path)") }
-print("wrote \(out.path)")
+DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+    web.takeSnapshot(with: nil) { image, error in
+        guard let image, let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            fatalError("snapshot failed: \(String(describing: error))")
+        }
+        let size = 1024
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: space, bitmapInfo: (rounded ? CGImageAlphaInfo.premultipliedLast : .noneSkipLast).rawValue)!
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: size, height: size))
+        let rep = NSBitmapImageRep(cgImage: ctx.makeImage()!)
+        guard let png = rep.representation(using: .png, properties: [:]) else { fatalError("png failed") }
+        try! png.write(to: out)
+        print("wrote \(out.path) \(size)x\(size)")
+        exit(0)
+    }
+}
+app.run()

@@ -1,6 +1,6 @@
-// Claude Ship ⇄ VS Code bridge.
+// ClaudeShip ⇄ VS Code bridge.
 //
-// VS Code has no scripting interface for terminals, so the Claude Ship
+// VS Code has no scripting interface for terminals, so the ClaudeShip
 // menubar app can't select an integrated-terminal tab on its own. This
 // extension is the missing half: when a session row is clicked, the app drops
 // a request file; every VS Code window runs this extension and watches that

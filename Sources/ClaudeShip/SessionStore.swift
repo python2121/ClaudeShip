@@ -14,6 +14,11 @@ final class SessionStore: ObservableObject {
     /// bar, true = the "inverted" look — a solid color block with
     /// contrasting text. Persisted; AppDelegate repaints via
     /// objectWillChange on change.
+    /// Whether the overlay is on screen. The view's 1 s clock for the
+    /// "held 2m" captions runs only then; the hosting view lives for the
+    /// app's lifetime, so without this it would re-evaluate the whole
+    /// overlay every second with nobody looking.
+    @Published var panelVisible = false
     @Published var invertMenubarColors: Bool = UserDefaults.standard.object(forKey: SessionStore.invertMenubarColorsKey) as? Bool ?? false {
         didSet { UserDefaults.standard.set(invertMenubarColors, forKey: SessionStore.invertMenubarColorsKey) }
     }
@@ -57,9 +62,22 @@ final class SessionStore: ObservableObject {
             if scanned[i].gitBranch == nil { scanned[i].gitBranch = previous?.gitBranch }
             if scanned[i].title == nil { scanned[i].title = previous?.title }
         }
-        if scanned != sessions { sessions = scanned }
+        // Publish only what the overlay can see change: a busy session's
+        // transcript mtime moves every scan and would otherwise republish
+        // (and re-diff the whole view) every 2 s for nothing.
+        if !Self.sameForDisplay(scanned, sessions) { sessions = scanned }
         reconcilePendingWithRegistry()
         pruneRules()
+    }
+
+    static func sameForDisplay(_ a: [ClaudeSession], _ b: [ClaudeSession]) -> Bool {
+        guard a.count == b.count else { return false }
+        return zip(a, b).allSatisfy { x, y in
+            var x = x, y = y
+            x.lastActivity = nil
+            y.lastActivity = nil
+            return x == y
+        }
     }
 
     /// The terminal prompt renders concurrently with our buttons (the CLI

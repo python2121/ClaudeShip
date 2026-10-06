@@ -14,6 +14,8 @@ struct DirectoryView: View {
     @State private var filter = ""
     @State private var settings = false
     @State private var expanded: Set<String> = []
+    /// `-expand <name>` at launch (simulator scripting).
+    nonisolated(unsafe) static var initialExpanded: String?
 
     var body: some View {
         @Bindable var store = store
@@ -23,10 +25,15 @@ struct DirectoryView: View {
                     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                     .listRowBackground(Color.clear)
             }
-            if let error = store.error, store.state == nil {
+            if store.offline {
+                Section {
+                    OfflineNote(host: store.hostName)
+                }
+                .listRowBackground(Color.clear)
+            } else if let error = store.error, store.state == nil {
                 Section { Text(error).foregroundStyle(.secondary) }
             }
-            if let state = store.state {
+            if let state = store.state, !store.offline {
                 if state.protocol != HubState.protocolVersion {
                     Section {
                         Text("The hub on the Mac is a different build than this app. Restart it when its sessions can end: claudeship hub stop, then claudeship hub start.")
@@ -46,7 +53,12 @@ struct DirectoryView: View {
                     Section {
                         ForEach(project.sessions) { session in SessionRow(session: session, project: project) }
                         if !DebugOff.contains("launch") { launchRow(project) }
-                        if expanded.contains(project.path) { recentRows(project) }
+                        // A running project's earlier conversations sit
+                        // behind a toggle, as on the web page's card.
+                        if !project.recent.isEmpty {
+                            EarlierRow(expanded: expanded.contains(project.path)) { toggle(project.path) }
+                            if expanded.contains(project.path) { recentRows(project) }
+                        }
                     } header: {
                         if DebugOff.contains("header") { Text(project.name) } else { ProjectHeader(project: project, running: true) }
                     }
@@ -82,7 +94,18 @@ struct DirectoryView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle("Claude Ship")
+        .onAppear {
+            if let name = Self.initialExpanded, let project = store.state?.projects.first(where: { $0.name == name }) {
+                expanded.insert(project.path)
+            }
+        }
+        .onChange(of: store.state?.projects.map(\.path)) { _, paths in
+            if let name = Self.initialExpanded, let project = store.state?.projects.first(where: { $0.name == name }) {
+                expanded.insert(project.path)
+                Self.initialExpanded = nil
+            }
+        }
+        .navigationTitle("ClaudeShip")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $filter, prompt: "Filter projects")
         .refreshable { await store.refresh() }
@@ -101,7 +124,7 @@ struct DirectoryView: View {
     }
 
     private var tally: some View {
-        let all = store.state?.allSessions ?? []
+        let all = store.offline ? [] : store.state?.allSessions ?? []
         let waiting = all.filter { $0.status == "waiting" }.count
         let busy = all.filter { $0.status == "busy" }.count
         return HStack(spacing: 8) {
@@ -228,7 +251,25 @@ struct SessionRow: View {
     }
 }
 
-/// A project with nothing running: name, branch, last conversation, when.
+/// The Mac isn't answering. Plain words, no alarm: a sleeping or
+/// switched-off Mac is the usual reason, and the polling keeps trying.
+private struct OfflineNote: View {
+    let host: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "moon.zzz").font(.title2).foregroundStyle(.secondary)
+            Text("Can't connect to \(host)").font(.headline)
+            Text("The Mac may be asleep or off, or Tailscale is off on one side. This page will fill in again when it answers.")
+                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+    }
+}
+
+/// A project with nothing running: name, branch, when. Its conversations
+/// show only when expanded, as the resume list.
 private struct ProjectRow: View {
     @Environment(HubStore.self) private var store
     let project: HubProject
@@ -238,21 +279,33 @@ private struct ProjectRow: View {
     var body: some View {
         Button(action: toggle) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 8) {
-                        Text(project.name).font(.body.weight(.semibold)).foregroundStyle(.primary)
-                        if let branch = project.branch {
-                            Text(branch).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
-                        }
+                HStack(spacing: 8) {
+                    Text(project.name).font(.body.weight(.semibold)).foregroundStyle(.primary)
+                    if let branch = project.branch {
+                        Text(branch).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
                     }
-                    Text(project.recent.first?.title
-                         ?? (project.lastActivity == nil ? "Not used with Claude yet" : "No summarized conversations"))
-                        .font(.footnote).foregroundStyle(project.recent.first == nil ? .tertiary : .secondary).lineLimit(1)
                 }
                 Spacer()
                 if let at = project.lastActivity {
                     Text(Ago.ago(ms: at, now: store.now)).font(.caption).foregroundStyle(.tertiary)
                 }
+                Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// "Earlier" — shows or hides a running project's resume list.
+private struct EarlierRow: View {
+    let expanded: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack {
+                Text("Earlier conversations").font(.subheadline).foregroundStyle(.secondary)
+                Spacer()
                 Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
             }
         }

@@ -55,7 +55,7 @@ struct PairView: View {
                     }
                 }
             }
-            .navigationTitle("Claude Ship")
+            .navigationTitle("ClaudeShip")
             .sheet(isPresented: $scanning) {
                 QRScannerSheet { code in
                     scanning = false

@@ -25,10 +25,12 @@ struct SessionScreen: View {
                 } else if let note = terminal.note {
                     pill(note, action: ("Retry", { terminal.retryNow() }))
                 } else if let foreign = terminal.foreignSize {
-                    pill("Sized for another screen (\(foreign.cols)×\(foreign.rows))", action: ("Fit here", { terminal.claim() }))
+                    pill("Mirroring another screen (\(foreign.cols)×\(foreign.rows))", action: ("Fit here", { terminal.claim() }))
                 }
             }
         }
+        .onAppear { store.viewingSession = true }
+        .onDisappear { store.viewingSession = false }
         .task {
             if terminal == nil {
                 let session = TerminalSession(hubId: hubId, connection: connection)

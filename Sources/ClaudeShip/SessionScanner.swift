@@ -56,7 +56,10 @@ struct ClaudeSession: Identifiable, Equatable {
     /// What the session is blocked on, when the CLI says (`waitingFor`).
     let waitingFor: String?
     /// Transcript mtime — the last moment the session wrote anything.
-    let lastActivity: Date?
+    /// Transcript mtime: the hub's directory orders projects by it. Not
+    /// shown in the menubar, so `sameForDisplay` ignores it — it changes on
+    /// every write while a session is busy.
+    var lastActivity: Date?
     /// When the current status began (`statusUpdatedAt`).
     let stateSince: Date?
     /// Session launch time (`startedAt`).
@@ -98,16 +101,20 @@ enum SessionScanner {
 
     // MARK: Scan
 
-    static func scan() -> [ClaudeSession] {
+    /// `forHub`: the hub's own directory build wants the registry plus
+    /// transcript garnish and nothing else — it matches sessions to its own
+    /// pids itself, shows no host, and must not ask itself over its socket.
+    static func scan(forHub: Bool = false) -> [ClaudeSession] {
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: sessionsRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
         ) else { return [] }
 
         // VS Code window state and the hub's session list are read once per
         // scan, not once per session.
-        let windows = TerminalFocus.loadVSCodeWindows()
-        let hubSessions = HubCLI.liveSessions()
+        let windows = forHub ? [] : TerminalFocus.loadVSCodeWindows()
+        let hubSessions = forHub ? [] : HubCLI.liveSessions()
         var sessions: [ClaudeSession] = []
+        var live = Set<pid_t>()
         for file in entries where file.pathExtension == "json" {
             // Registry files are named <pid>.json; anything else isn't ours.
             guard Int32(file.deletingPathExtension().lastPathComponent) != nil,
@@ -116,20 +123,87 @@ enum SessionScanner {
             else { continue }
             // A file whose pid is dead is a leftover from a crash — skip it.
             guard pidAlive(entry.pid) else { continue }
-            var session = session(for: entry, windows: windows)
+            live.insert(entry.pid)
+            var session = session(for: entry, windows: windows, resolveHost: !forHub)
             if !hubSessions.isEmpty {
                 // The hub's pid for a session is its supervisor, an ancestor of
                 // the Claude process.
-                let chain = TerminalFocus.ancestorPids(of: entry.pid)
+                let chain = ancestry(of: entry).chain
                 session.hubId = hubSessions.first { chain.contains($0.pid) }?.id
             }
             sessions.append(session)
         }
+        if !forHub { pruneAncestry(keeping: live) }
         // Stable order so popover rows don't jump between polls.
         return sessions.sorted { ($0.cwd, $0.pid) < ($1.cwd, $1.pid) }
     }
 
-    private static func session(for entry: RegistryEntry, windows: [TerminalFocus.VSCodeWindowState]) -> ClaudeSession {
+    /// What a session's process tree tells us, cached per pid: the ancestor
+    /// chain and the host app. A process's ancestry is fixed for its life
+    /// (the shell above claude doesn't change), and resolving it costs a
+    /// sysctl per ancestor plus LaunchServices lookups — a few milliseconds
+    /// a session, every 2 s, for an answer that never changes. The registry's
+    /// `startedAt` guards against a reused pid; a Claude that can't be
+    /// matched to any app is remembered as such too (`resolved`), since
+    /// asking again each scan is the same cost. Scans may overlap, hence the
+    /// lock.
+    struct Ancestry {
+        var startedAt: Date?
+        var chain: [pid_t]
+        var bundleId: String?
+        var appName: String?
+        var resolved = false
+    }
+    private static var ancestryCache: [pid_t: Ancestry] = [:]
+    private static let ancestryLock = NSLock()
+
+    static func ancestry(of entry: RegistryEntry) -> Ancestry {
+        ancestryLock.lock()
+        let hit = ancestryCache[entry.pid]
+        ancestryLock.unlock()
+        if let hit, hit.startedAt == entry.startedAt { return hit }
+        let fresh = Ancestry(startedAt: entry.startedAt, chain: TerminalFocus.ancestorPids(of: entry.pid))
+        ancestryLock.lock()
+        ancestryCache[entry.pid] = fresh
+        ancestryLock.unlock()
+        return fresh
+    }
+
+    private static func resolvedHostApp(of entry: RegistryEntry) -> (bundleId: String, appName: String)? {
+        var record = ancestry(of: entry)
+        if !record.resolved {
+            if let app = TerminalFocus.hostApp(of: entry.pid), let bundleId = app.bundleIdentifier {
+                record.bundleId = bundleId
+                record.appName = TerminalFocus.displayName(forBundleId: bundleId, fallback: app.localizedName ?? bundleId)
+            }
+            record.resolved = true
+            ancestryLock.lock()
+            ancestryCache[entry.pid] = record
+            ancestryLock.unlock()
+        }
+        guard let bundleId = record.bundleId, let appName = record.appName else { return nil }
+        return (bundleId, appName)
+    }
+
+    private static func pruneAncestry(keeping live: Set<pid_t>) {
+        ancestryLock.lock()
+        ancestryCache = ancestryCache.filter { live.contains($0.key) }
+        ancestryLock.unlock()
+    }
+
+    /// The host, from the cached app plus the live VS Code window state
+    /// (window labels do change: the extension reports late, or a folder is
+    /// opened in a window after claude started).
+    private static func host(of entry: RegistryEntry, windows: [TerminalFocus.VSCodeWindowState]) -> SessionHost? {
+        guard let app = resolvedHostApp(of: entry) else { return nil }
+        var window: String?
+        if TerminalFocus.adapter(forBundleId: app.bundleId) == .vscode {
+            window = TerminalFocus.vscodeWindow(owning: ancestry(of: entry).chain, in: windows)?.label
+        }
+        return SessionHost(bundleId: app.bundleId, appName: app.appName, window: window)
+    }
+
+    private static func session(for entry: RegistryEntry, windows: [TerminalFocus.VSCodeWindowState], resolveHost: Bool) -> ClaudeSession {
         var branch: String?
         var title: String?
         var mtime: Date?
@@ -154,7 +228,7 @@ enum SessionScanner {
             // A background session hangs off the daemon (reparented to launchd),
             // so the ancestor walk finds nothing — skip it rather than risk a
             // spurious host if the daemon were ever launched from an app.
-            host: background ? nil : TerminalFocus.host(of: entry.pid, windows: windows),
+            host: background || !resolveHost ? nil : host(of: entry, windows: windows),
             isBackground: background,
             jobId: entry.jobId,
             state: state(fromStatus: entry.status),
