@@ -54,7 +54,15 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
   when this screen owns the size and `fit` when it doesn't, a `size`
   message with `owner:false` and a foreign grid shrinks the font so that
   grid fits and shows "Fit here". Heartbeat `ping`/`pong` every 15 s;
-  `revive()` on return to the foreground. `KeyBar` is the row above the
+  `revive()` on return to the foreground. `HubTerminalView` (a `TerminalView`
+  subclass) owns scrolling while the program has mouse reporting on —
+  Claude Code's full-screen TUI — where SwiftTerm would otherwise send a
+  finger drag as mouse-drag reports: it disables SwiftTerm's drag
+  recognizer and the scroll view's own pan, and turns vertical drags into
+  wheel events (`Terminal.sendEvent`, buttons 64/65, encoded in whatever
+  mouse protocol the program negotiated) with scroll-view-style momentum.
+  `linesPerWheelTick` is the feel knob. With reporting off, SwiftTerm's
+  native scrollback scrolling is back. `KeyBar` is the row above the
   keyboard (esc, tab, ⇧tab, ^C, arrows, pgup/pgdn, ⏎); arrows honour
   application-cursor mode.
 - Launch arguments for a scripted simulator (there is no way to tap the
