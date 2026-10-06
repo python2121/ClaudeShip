@@ -14,7 +14,11 @@ unset CLAUDESHIP_HOME CLAUDESHIP_CMD CLAUDESHIP_WEB
 APP_NAME="ClaudeShip"
 APP_BUNDLE="${APP_NAME}.app"
 DEST="/Applications/${APP_BUNDLE}"
-LABEL="com.andrewnowicki.claudeship"
+# The LaunchAgent label is the bundle id (BUNDLE_ID in .env, as in build-app.sh).
+if [[ -f .env ]]; then
+  set -a; . ./.env; set +a
+fi
+LABEL="${BUNDLE_ID:-com.example.claudeship}"
 PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 UID_NUM="$(id -u)"
 
@@ -33,16 +37,12 @@ if [[ -d "${OLD_SUPPORT}" && ! -d "${NEW_SUPPORT}" ]]; then
   echo "==> moving Application Support/ClaudeStatus → ${APP_NAME}"
   mv "${OLD_SUPPORT}" "${NEW_SUPPORT}"
 fi
-if launchctl print "gui/${UID_NUM}/com.andrewnowicki.claudestatus" >/dev/null 2>&1; then
-  launchctl bootout "gui/${UID_NUM}/com.andrewnowicki.claudestatus" 2>/dev/null || true
-fi
 if pgrep -x ClaudeStatus >/dev/null 2>&1; then
   echo "==> stopping the old ClaudeStatus menubar app"
   pkill -x ClaudeStatus || true
   sleep 0.5
 fi
 rm -rf "/Applications/ClaudeStatus.app"
-rm -f "${HOME}/.local/bin/claudeandrew"
 
 if [[ ! -d "${APP_BUNDLE}" ]]; then
   echo "ERROR: ${APP_BUNDLE} not built — run ./build-app.sh first" >&2

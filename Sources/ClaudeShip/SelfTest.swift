@@ -42,14 +42,14 @@ enum SelfTest {
 
         let registryJSON = """
         {"pid":43606,"sessionId":"93fb531a-9e91-4926-ab89-93ded70cba7e",\
-        "cwd":"/Users/andrewnowicki/Documents/code/claude-status",\
+        "cwd":"/Users/x/code/claude-status",\
         "startedAt":1783455271121,"version":"2.1.202","kind":"interactive",\
         "name":"claude-status-b3","status":"busy",\
         "updatedAt":1783457374373,"statusUpdatedAt":1783457374373}
         """
         let entry = SessionScanner.parseRegistryEntry(Data(registryJSON.utf8))
         t.expectEqual(entry?.pid, 43606, "registry: pid")
-        t.expectEqual(entry?.cwd, "/Users/andrewnowicki/Documents/code/claude-status", "registry: cwd")
+        t.expectEqual(entry?.cwd, "/Users/x/code/claude-status", "registry: cwd")
         t.expectEqual(entry?.sessionId, "93fb531a-9e91-4926-ab89-93ded70cba7e", "registry: sessionId")
         t.expectEqual(entry?.name, "claude-status-b3", "registry: name")
         t.expectEqual(entry?.status, "busy", "registry: status")
@@ -85,8 +85,8 @@ enum SelfTest {
         // MARK: projectDirName
 
         t.expectEqual(
-            SessionScanner.projectDirName(forCwd: "/Users/andrewnowicki/Documents/code/claude-status"),
-            "-Users-andrewnowicki-Documents-code-claude-status",
+            SessionScanner.projectDirName(forCwd: "/Users/x/code/claude-status"),
+            "-Users-x-code-claude-status",
             "projectDirName flattens slashes"
         )
         t.expectEqual(
@@ -780,7 +780,7 @@ enum SelfTest {
         t.expectEqual(HubWebSecurity.isAllowedHost("100.101.102.103:7433"), true, "host: tailnet literal")
         t.expectEqual(HubWebSecurity.isAllowedHost("[fd7a:115c:a1e0::1]:7433"), true, "host: tailnet IPv6 literal")
         t.expectEqual(HubWebSecurity.isAllowedHost("[::1]:7433"), true, "host: IPv6 loopback literal")
-        t.expectEqual(HubWebSecurity.isAllowedHost("andrews-macbook-air:7433"), false, "host: a bare name is whatever DNS says it is")
+        t.expectEqual(HubWebSecurity.isAllowedHost("my-mac:7433"), false, "host: a bare name is whatever DNS says it is")
         t.expectEqual(HubWebSecurity.isAllowedHost("mac.tail1234.ts.net"), false, "host: so is a tailnet name, over plain HTTP")
         t.expectEqual(HubWebSecurity.isAllowedHost("Mac.Tail1234.ts.net:443", extra: ["mac.tail1234.ts.net"]), true, "host: unless the config vouches for it")
         t.expectEqual(HubWebSecurity.isAllowedHost("evil.example.com:7433"), false, "host: rebinding domain refused")

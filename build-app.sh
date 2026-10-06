@@ -5,15 +5,17 @@ set -euo pipefail
 
 CONFIG="${CONFIG:-release}"
 APP_NAME="ClaudeShip"
-BUNDLE_ID="com.andrewnowicki.claudeship"
 APP_DIR="${APP_NAME}.app"
 
 cd "$(dirname "$0")"
 
-# Load SIGN_IDENTITY (and any other secrets) from .env if present.
+# Load SIGN_IDENTITY and BUNDLE_ID (and any other secrets) from .env if present.
 if [[ -f .env ]]; then
   set -a; . ./.env; set +a
 fi
+# Set your own in .env. Changing it on an installed app resets its settings
+# (UserDefaults are keyed by it) and its Automation grants.
+BUNDLE_ID="${BUNDLE_ID:-com.example.claudeship}"
 
 # The Command Line Tools cannot compile SwiftUI's `@State` (a macro whose
 # plugin ships only in Xcode, as of the macOS 27 SDK). Use `@ViewState` from

@@ -4,7 +4,7 @@ import Security
 /// Minimal generic-password wrapper for the one secret the app holds: the
 /// hub's pairing token. Everything else is plain UserDefaults.
 enum Keychain {
-    private static let service = "com.python21.ClaudeShip"
+    private static let service = Bundle.main.bundleIdentifier ?? "ClaudeShip"
     /// errSecMissingEntitlement: an unsigned build (the simulator, built
     /// with CODE_SIGNING_ALLOWED=NO) has no keychain at all. Only then does
     /// the secret fall back to UserDefaults; a signed build on a phone

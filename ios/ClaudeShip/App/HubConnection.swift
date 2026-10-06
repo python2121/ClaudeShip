@@ -31,7 +31,7 @@ final class HubConnection {
 
     var isPaired: Bool { baseURL != nil && token != nil }
 
-    /// The host as a person would say it ("100.95.168.69:7433").
+    /// The host as a person would say it ("100.101.102.103:7433").
     var displayAddress: String {
         guard let url = baseURL, let host = url.host else { return "" }
         return url.port.map { "\(host):\($0)" } ?? host

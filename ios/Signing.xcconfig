@@ -1,0 +1,12 @@
+// Signing for the iPhone app. Set your own team and a bundle id that is
+// yours in Signing.local.xcconfig (gitignored), e.g.
+//
+//   DEVELOPMENT_TEAM = ABCDE12345
+//   PRODUCT_BUNDLE_IDENTIFIER = com.yourname.ClaudeShip
+//
+// Changing the bundle id of an installed app makes it a different app: the
+// phone asks for Local Network access again and the pairing is lost.
+DEVELOPMENT_TEAM =
+PRODUCT_BUNDLE_IDENTIFIER = com.example.ClaudeShip
+
+#include? "Signing.local.xcconfig"

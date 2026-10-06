@@ -6,3 +6,4 @@
 ios/build/
 ios/ClaudeShip.xcodeproj/xcuserdata/
 ios/ClaudeShip.xcodeproj/project.xcworkspace/xcuserdata/
+ios/Signing.local.xcconfig

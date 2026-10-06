@@ -8,7 +8,6 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP=build/Build/Products/Debug-iphonesimulator/ClaudeShip.app
-BUNDLE=com.python21.ClaudeShip
 
 xcodebuild -project ClaudeShip.xcodeproj -scheme ClaudeShip \
   -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
@@ -18,6 +17,7 @@ xcodebuild -project ClaudeShip.xcodeproj -scheme ClaudeShip \
 test -d "$APP" || { echo "error: no app at $APP" >&2; exit 1; }
 
 if [[ "${1:-}" == "run" ]]; then
+  BUNDLE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist")
   xcrun simctl bootstatus booted -b >/dev/null 2>&1 || xcrun simctl boot "iPhone 17e"
   xcrun simctl install booted "$APP"
   xcrun simctl terminate booted "$BUNDLE" 2>/dev/null || true

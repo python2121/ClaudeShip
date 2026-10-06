@@ -17,7 +17,10 @@ its Metal shaders need Xcode's Metal toolchain: `xcodebuild
 -downloadComponent MetalToolchain` once).
 
 Personal build. iOS 17+, iPhone only, signed with the user's own team and
-installed from Xcode. Plain `@State` is fine here (full Xcode builds it);
+installed from Xcode. Team and bundle id live in `Signing.local.xcconfig`
+(gitignored), included by `Signing.xcconfig` (the target's base config,
+neutral defaults); never put them back in the project file. The keychain
+service and URL name follow the bundle id. Plain `@State` is fine here (full Xcode builds it);
 the Mac app's `@ViewState` rule does not apply.
 
 ## Common commands

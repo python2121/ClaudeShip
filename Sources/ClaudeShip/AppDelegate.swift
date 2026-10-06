@@ -285,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Click-to-focus
 
-    private let focusQueue = DispatchQueue(label: "com.andrewnowicki.claudeship.terminal-focus")
+    private let focusQueue = DispatchQueue(label: "claudeship.terminal-focus")
 
     /// Row click: hide the overlay first (a popUpMenu-level floating panel
     /// would otherwise sit over the terminal we're about to raise), then

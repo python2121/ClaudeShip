@@ -52,7 +52,7 @@ Security: the hub accepts connections only from this Mac or from Tailscale addre
 
 ## iPhone app
 
-`ios/ClaudeShip.xcodeproj`. Open it in Xcode, choose your phone, Run (your team is set in the project). Then **Scan the QR code** from `claudeship hub link`, or paste the link. Needs full Xcode and its Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`); `ios/build.sh` does a simulator build.
+`ios/ClaudeShip.xcodeproj`. Open it in Xcode, choose your phone, Run. First put your team and a bundle id of your own in `ios/Signing.local.xcconfig` (gitignored; see `ios/Signing.xcconfig`). Then **Scan the QR code** from `claudeship hub link`, or paste the link. Needs full Xcode and its Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`); `ios/build.sh` does a simulator build.
 
 The phone takes the session's size whenever you look at it; drag to scroll Claude's transcript, with momentum; the key bar above the keyboard has esc, tab, ⇧tab, ^C, arrows, page up/down, and return.
 
@@ -64,7 +64,7 @@ The phone takes the session's size whenever you look at it; drag to scroll Claud
 
 Builds a release bundle, installs `/Applications/ClaudeShip.app`, links `~/.local/bin/claudeship`, starts the hub, registers the permission hook, and installs the VS Code bridge extension (`SKIP_HOOK=1`, `SKIP_VSCODE_EXT=1`, `SKIP_HUB=1` opt out of each). Upgrading from the app's former name (ClaudeStatus) is handled automatically: its settings and the hub's pairing move with it.
 
-Code signing is best-effort: set `SIGN_IDENTITY` in a `.env` file for a stable identity (keeps macOS from re-asking for Automation permission after every rebuild); otherwise ad-hoc.
+Code signing is best-effort: set `SIGN_IDENTITY` in a `.env` file for a stable identity (keeps macOS from re-asking for Automation permission after every rebuild); otherwise ad-hoc. Set `BUNDLE_ID` there too (default `com.example.claudeship`); changing it on an installed app resets its settings.
 
 ## Development
 
