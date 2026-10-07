@@ -703,6 +703,125 @@ one machine removes it everywhere within a few polls.
 
 ---
 
+## 11. Jobs: a Claude session that drives a Claude session elsewhere
+
+Decided 2026-10-07: arbitrary `argv` jobs allowed; MCP tool names prefixed `ship_`; a wall-clock cap per job (below). A session on one machine can start a
+headless Claude run on another swarm member, wait for it, read its output,
+and continue the same remote conversation later. Claude Code on the
+orchestrating machine reaches this as MCP tools; the `claudeship` command
+offers the same for scripts and for Bash-tool use.
+
+**Why jobs and not terminals.** A `-p` run on pipes gives clean, machine-
+readable output (`--output-format stream-json`) and an exit code; a pty
+gives a TUI meant for eyes. Multi-turn comes from Claude Code itself: the
+first run's `session_id` is resumed by the next (`--resume`), so the
+remote side keeps its context between jobs.
+
+**Job model (`hub/src/jobs.rs`).**
+`Job { id (6 hex like sessions), host-local, cwd, argv, permissionMode,
+startedAt, finishedAt?, exitCode?, pid, stdout: bounded buffer (4 MB,
+oldest dropped, `truncated` flag), stderr: 256 KB, claudeSessionId? (parsed
+from stream-json `result`/`system` events when argv[0] is claude) }`.
+Spawned with pipes (no pty; `std::process::Command`, `kill_on_drop`), the
+same whitelisted login-shell environment as a web launch, cwd restricted
+by `launch_target` **or** any directory under `root` (jobs run in
+subfolders and worktrees; the request body is still untrusted — canonicalise
+and require the `root` prefix or the home directory). Finished jobs are
+kept 1 h or until read with `?consume=1`, at most 64 per hub (oldest
+finished evicted). `hub stop` kills running jobs' process groups.
+**Wall clock:** every job has `maxSeconds` (default 1800, request may set
+up to 14400; `config.jobsMaxSeconds` raises the ceiling); on expiry the
+job's process group gets SIGTERM, then SIGKILL 10 s later, `exitCode` 124
+and `timedOut: true`, and the output so far is kept. `ask` uses the same
+cap; the MCP `ship_ask`/`ship_wait` calls return early with the job handle
+well before it.
+
+**Endpoints** (same gates as every POST; `host` proxied like Phase 10):
+- `POST /api/jobs {host?, cwd, argv: [..] | prompt + claude options,
+  permissionMode?, resume?: uuid, env?: {k: v} whitelist}` → `{id, host}`.
+  The convenience form builds `claude -p <prompt> --output-format stream-json
+  --permission-mode <mode> [--resume <id>]`; `argv` runs anything (trust
+  statement below).
+- `GET /api/jobs?host=` → list; `GET /api/jobs/<id>?host=&wait=<s>&since=<n>`
+  → `{id, running, exitCode, claudeSessionId, stdout (from byte n), stderr,
+  truncated}`; `wait` long-polls up to 60 s for a change (finish or new
+  output); `POST /api/jobs/<id>/kill`.
+- Peer arms: `/peer/api/jobs…` on `LocalOnly`.
+
+**CLI.**
+```
+claudeship run [--host <name|id>] [--cwd <dir>] [--mode auto] -- <argv…>     # prints the job id
+claudeship ask [--host …] [--cwd …] [--mode …] [--resume <uuid>] "<prompt>"   # start, wait, print result text, exit with its code
+claudeship jobs [--host …]                                                    # list
+claudeship jobs wait|output|kill <id> [--host …]
+```
+`ask` prints the remote Claude's final text (the `result` event) to stdout
+and the stream to stderr with `-v`, and prints the session id on stderr so a
+follow-up can `--resume` it.
+
+**MCP server (`claudeship mcp`, stdio JSON-RPC).** Registered once:
+`claude mcp add claudeship -- claudeship mcp`. Tools:
+- `ship_hosts()` → the swarm's `hosts[]` (name, id, reachable, protocol, root).
+- `ship_run(host, cwd, argv, mode?, maxSeconds?)` → `{job}`;
+  `ship_wait(host, job, timeoutSeconds?)` → status + new output;
+  `ship_output(host, job, since?)`; `ship_kill(host, job)`.
+- `ship_ask(host, cwd, prompt, mode?, resume?, maxSeconds?)` → `{result,
+  sessionId, exitCode, job}`: starts the job and waits up to the MCP call's deadline, returning
+  `{job, running: true}` if it is not done, so the caller `wait`s again.
+- `ship_sessions(host?)` → the live sessions from `hosts[]`, for "is anything
+  already running there".
+Every tool answer is JSON text; errors are MCP errors naming the host.
+The server talks to the local hub over loopback with the token file,
+exactly like the Mac app.
+
+**Permissions.** A `-p` run cannot answer prompts. The orchestrator chooses
+the mode per job; default `auto`. Under `manual`/`plan` the remote hub's
+approval bridge still raises the prompt, so a person can approve from the
+phone or web page while the job waits — the job's `wait` reports
+`waitingFor` from the registry when the run has registered a session.
+The Claude Code hook (`claudeship permission-hook`) is per machine and
+already installed by `install-hub.sh`/`install.sh`.
+
+**Trust, stated plainly.** `argv` jobs are remote command execution on a
+member, authorised by the swarm secret or the member's pairing token. The
+swarm already permits this (a bypass-mode launch on a peer); jobs make it
+explicit. `docs/hub.md` says so, and `hub status` prints "jobs enabled"
+only when `config.jobs` is true (default **false** until the owner turns it
+on per machine — the one new switch).
+
+**Watching (later).** A `watch: true` flag would mirror a job's output into
+a hub session so it can be attached to from the page or phone. Not in this
+phase.
+
+Work items:
+
+- [x] `jobs.rs`: spawn on pipes, bounded buffers, stream-json session-id
+      parse, eviction, kill, `hub stop` cleanup; `config.jobs` switch.
+- [x] Endpoints + peer arms + proxy (long-poll `wait` through the relay
+      path — a plain forwarded GET with the 60 s budget). (`web/jobs.rs`;
+      a `wait` is exempt from the server's 15 s sweep for its length.)
+- [x] CLI `run`, `ask`, `jobs …` (`cli/jobs_cmd.rs`).
+- [x] `claudeship mcp`: stdio server, the seven `ship_*` tools, `claude mcp add`
+      line in docs; a smoke test that drives it with a scripted JSON-RPC
+      client.
+- [x] Tests (private hubs, stand-in in place of claude producing stream-json
+      lines): run/wait/output/kill, truncation flag, eviction, `consume`,
+      a job through a peer, `wait` long-poll returns on finish and on new
+      output, cwd outside root refused, `config.jobs=false` → 403, `hub
+      stop` kills jobs, the wall-clock cap (SIGTERM then SIGKILL, 124,
+      `timedOut`), MCP tool round-trips. (Jobs: `hub/tests/jobs.rs`; MCP:
+      part B's smoke test.)
+- [x] Docs: `docs/jobs.md` (model, endpoints, CLI, MCP, the trust
+      statement, an example orchestration: build here, test there, merge).
+
+Acceptance: from a Claude session on the Mac with the MCP server
+registered, "build this branch here, push it, then have the Steam machine
+pull it, run the suite, and report" runs end to end, with the remote
+session resumed for a follow-up question; a `manual`-mode remote job's
+permission prompt is answered from the phone.
+
+---
+
 ## Remaining — needs the owner
 
 - Phase 3 side-by-side: drive real `claude` through a private Rust hub for a working day.

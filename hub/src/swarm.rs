@@ -38,7 +38,7 @@ use crate::config::HubConfig;
 use crate::web::security::{constant_time_equals, is_loopback, is_tailnet};
 use crate::{net, paths, procs};
 
-pub use gossip::Swarm;
+pub use gossip::{INVITE_BUDGET, Swarm};
 
 /// How long a tombstone is carried before it is forgotten.
 pub const TOMBSTONE_KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -87,6 +87,38 @@ pub fn is_dialable(address: SocketAddr) -> bool {
     net::tunnel_addresses(tunnel_interfaces())
         .into_iter()
         .any(|ip| is_tailnet(ip) && ip.is_ipv4() == address.is_ipv4())
+}
+
+/// A pairing link to enrol another hub from here (`POST /api/swarm/invite`):
+/// exactly `http://<ip literal>:<port>/auth?k=<key>` — no DNS name (whoever
+/// runs the network's DNS could point one anywhere, and this hub is about
+/// to hand over the swarm secret), no other scheme or path, an explicit
+/// port, a key of letters and digits. The address must be a peer address
+/// (`is_peer_address`: tailnet, or loopback under the test knob); whether
+/// it is dialable now is the caller's question.
+pub fn parse_invite_link(link: &str) -> Result<(SocketAddr, String), &'static str> {
+    const SHAPE: &str = "that is not a pairing link (http://<address>:<port>/auth?k=…, from claudeship hub link)";
+    let rest = link.trim().strip_prefix("http://").ok_or(SHAPE)?;
+    let (authority, target) = rest.split_once('/').ok_or(SHAPE)?;
+    let query = target.strip_prefix("auth?").ok_or(SHAPE)?;
+    // The key and nothing else: no second `k`, no other parameter.
+    let key = query
+        .strip_prefix("k=")
+        .filter(|k| !k.is_empty() && k.len() <= 256 && k.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .ok_or(SHAPE)?;
+    let address: SocketAddr = authority
+        .parse()
+        .map_err(|_| "the link must name the other computer by its Tailscale IP address and port, not a name")?;
+    // A port to dial, and no IPv6 zone (`%en0`): the address must print
+    // back as the Host the other hub accepts.
+    let zoned = matches!(address, SocketAddr::V6(v6) if v6.scope_id() != 0 || v6.flowinfo() != 0);
+    if address.port() == 0 || zoned {
+        return Err(SHAPE);
+    }
+    if !is_peer_address(address) {
+        return Err("the link must name the other computer's Tailscale address (100.x.y.z or fd7a:115c:a1e0::…)");
+    }
+    Ok((address, key.to_string()))
 }
 
 /// Text from a peer, for logs and terminals: no control characters.
@@ -866,6 +898,47 @@ mod tests {
         PeerRecord {
             tombstone: Some(at),
             ..record(id, 0, "100.64.0.9:7433")
+        }
+    }
+
+    #[test]
+    fn invite_links() {
+        let ok = |l: &str| parse_invite_link(l).map(|(a, k)| (a.to_string(), k));
+        assert_eq!(ok(" http://100.64.0.1:7433/auth?k=abc123 "), Ok(("100.64.0.1:7433".into(), "abc123".into())));
+        assert_eq!(ok("http://[fd7a:115c:a1e0::1]:7433/auth?k=ff"), Ok(("[fd7a:115c:a1e0::1]:7433".into(), "ff".into())));
+        for bad in [
+            "https://100.64.0.1:7433/auth?k=ab",
+            "http://100.64.0.1:7433/other?k=ab",
+            "http://100.64.0.1:7433/auth/?k=ab",
+            "http://100.64.0.1:7433/auth?k=",
+            "http://100.64.0.1:7433/auth?k=a%20b",
+            "http://100.64.0.1/auth?k=ab",
+            "http://box.tailnet.ts.net:7433/auth?k=ab",
+            "http://localhost:7433/auth?k=ab",
+            "http://user@100.64.0.1:7433/auth?k=ab",
+            "http://192.168.1.2:7433/auth?k=ab",
+            "http://8.8.8.8:7433/auth?k=ab",
+            // Loopback only under the test knob, which unit tests don't set.
+            "http://127.0.0.1:7433/auth?k=ab",
+            "ftp://100.64.0.1:7433/auth?k=ab",
+            // Exactly one parameter, the key.
+            "http://100.64.0.1:7433/auth?x=1&k=ab",
+            "http://100.64.0.1:7433/auth?k=ab&next=http://8.8.8.8/",
+            "http://100.64.0.1:7433/auth?k=ab&k=cd",
+            "http://100.64.0.1:7433/auth?k=ab#x",
+            "http://100.64.0.1:7433/auth/../x?k=ab",
+            "http://100.64.0.1:7433//auth?k=ab",
+            "http://100.64.0.1:7433@8.8.8.8:80/auth?k=ab",
+            "http://100.64.0.1:0/auth?k=ab",
+            "http://100.64.0.1:65536/auth?k=ab",
+            "http://100.64.0.1:7433:80/auth?k=ab",
+            "http://fd7a:115c:a1e0::1:7433/auth?k=ab",
+            "http://[fd7a:115c:a1e0::1%25en0]:7433/auth?k=ab",
+            "http://[fd7a:115c:a1e0::1%5]:7433/auth?k=ab",
+            "http://100.64.0.1:7433\r\nX: y/auth?k=ab",
+            "",
+        ] {
+            assert!(parse_invite_link(bad).is_err(), "{bad}");
         }
     }
 

@@ -19,14 +19,15 @@ use tokio::net::{TcpListener, TcpStream};
 use tower::ServiceExt;
 
 use super::security::{describe, is_allowed_pair};
-use super::{ConnectionSlot, Shared, router};
+use super::{ConnectionSlot, Patience, Shared, router};
 use crate::hub::log;
 use crate::net;
 
 /// Each connection is a descriptor the hub also needs for ptys.
 pub const MAX_CONNECTIONS: usize = 128;
 /// A plain request not answered in this long is holding one of a limited
-/// number of slots (they take milliseconds); it is dropped.
+/// number of slots (they take milliseconds); it is dropped — unless it is
+/// a job's long-poll, which asks for its wait's worth more (`Patience`).
 const UNANSWERED: Duration = Duration::from_secs(15);
 /// The most a request line and headers may take (hyper's floor is 8 KB).
 const MAX_HEAD: usize = 64 * 1024;
@@ -125,12 +126,15 @@ pub async fn run(shared: Arc<Shared>) {
 /// the terminal holds its own reference to the connection's slot.
 async fn serve(stream: TcpStream, shared: Arc<Shared>, slot: Arc<ConnectionSlot>) {
     let answered = Arc::new(AtomicBool::new(false));
+    let patience = Patience::default();
     let router = router::router(shared.clone());
     let service = {
         let answered = answered.clone();
         let slot = slot.clone();
+        let patience = patience.clone();
         tower::service_fn(move |mut request: Request<Incoming>| {
             request.extensions_mut().insert(slot.clone());
+            request.extensions_mut().insert(patience.clone());
             let router = router.clone();
             let answered = answered.clone();
             async move {
@@ -157,9 +161,15 @@ async fn serve(stream: TcpStream, shared: Arc<Shared>, slot: Arc<ConnectionSlot>
             // A request that hasn't been answered yet; one that is
             // mid-response (a page's files over a thin link) is left to
             // finish.
+            // A job's long-poll asked for more time first (once).
             _ = &mut deadline, if !checked => {
                 if !answered.load(Ordering::Relaxed) {
-                    break;
+                    let extra = patience.take();
+                    if extra == 0 {
+                        break;
+                    }
+                    deadline.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(extra));
+                    continue;
                 }
                 checked = true;
             }

@@ -21,7 +21,7 @@ claude-sessions = { path = "../claude-sessions" }
 serde.workspace = true
 serde_json.workspace = true
 libc.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "signal", "time", "sync", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "signal", "time", "sync", "macros", "process"] }
 qrcode = { version = "0.14", default-features = false }
 axum = { version = "0.8", default-features = false, features = ["ws", "json", "query", "tokio", "http1"] }
 hyper = { version = "1", features = ["server", "http1"] }

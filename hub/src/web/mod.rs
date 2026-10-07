@@ -8,6 +8,7 @@
 //! as a `Command`, like a terminal client's frames do.
 
 pub mod assets;
+pub mod jobs;
 pub mod peer;
 pub mod peer_api;
 pub mod proxy;
@@ -17,7 +18,7 @@ pub mod server;
 pub mod state;
 pub mod ws;
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::{mpsc, watch};
@@ -42,6 +43,8 @@ pub struct Shared {
     pub state: Arc<state::Cache>,
     /// The swarm: its book (which `/peer/*` gets alone) and the peer client.
     pub swarm: Arc<crate::swarm::Swarm>,
+    /// Jobs (`jobs.rs`), which `/peer/api/jobs…` gets too.
+    pub jobs: Arc<crate::jobs::Jobs>,
 }
 
 impl Shared {
@@ -57,6 +60,7 @@ impl Shared {
             connections: AtomicUsize::new(0),
             state: Arc::default(),
             swarm: crate::swarm::Swarm::new(config.port),
+            jobs: crate::jobs::Jobs::new(config),
         })
     }
 
@@ -83,6 +87,22 @@ impl Shared {
 
     pub fn is_listening(&self) -> bool {
         self.listening.load(Ordering::Relaxed)
+    }
+}
+
+/// How much longer than the usual 15 s a connection's request may go
+/// unanswered: a job's long-poll `wait` says so before it starts waiting
+/// (`server.rs` sweeps unanswered requests).
+#[derive(Clone, Default)]
+pub struct Patience(Arc<AtomicU64>);
+
+impl Patience {
+    pub fn extend(&self, seconds: u64) {
+        self.0.fetch_max(seconds, Ordering::Relaxed);
+    }
+
+    pub fn take(&self) -> u64 {
+        self.0.swap(0, Ordering::Relaxed)
     }
 }
 

@@ -25,6 +25,11 @@ pub struct HubConfig {
     /// held by one of these: on macOS Tailscale is a `utun` device, on
     /// Linux it is `tailscale0`.
     pub tunnel_interfaces: Vec<String>,
+    /// Jobs (`jobs.rs`): remote command execution for swarm members and
+    /// paired clients. Off unless the owner turns it on, per machine.
+    pub jobs: bool,
+    /// Raises the largest `maxSeconds` a job may ask for (default 14 400).
+    pub jobs_max_seconds: Option<u64>,
 }
 
 /// What `claude --permission-mode` accepts (2.1.289).
@@ -67,6 +72,8 @@ impl HubConfig {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            jobs: false,
+            jobs_max_seconds: None,
         }
     }
 
@@ -100,6 +107,14 @@ impl HubConfig {
         if let Some(names) = string_list(obj.get("tunnelInterfaces")) {
             config.tunnel_interfaces = names.into_iter().filter(|n| !n.is_empty()).collect();
         }
+        if let Some(jobs) = obj.get("jobs").and_then(Value::as_bool) {
+            config.jobs = jobs;
+        }
+        if let Some(seconds) = obj.get("jobsMaxSeconds").and_then(integer)
+            && seconds > 0
+        {
+            config.jobs_max_seconds = Some(seconds as u64);
+        }
         config
     }
 
@@ -122,6 +137,10 @@ impl HubConfig {
         );
         obj.insert("allowedHosts", self.allowed_hosts.clone().into());
         obj.insert("tunnelInterfaces", self.tunnel_interfaces.clone().into());
+        obj.insert("jobs", self.jobs.into());
+        if let Some(seconds) = self.jobs_max_seconds {
+            obj.insert("jobsMaxSeconds", seconds.into());
+        }
         let data = serde_json::to_vec_pretty(&obj).map_err(std::io::Error::other)?;
         let mut temp = path.as_os_str().to_owned();
         temp.push(format!(".tmp-{}", std::process::id()));
@@ -292,6 +311,19 @@ mod tests {
     }
 
     #[test]
+    fn jobs_switch() {
+        let c = HubConfig::parse(br#"{}"#);
+        assert!(!c.jobs, "jobs are off by default");
+        assert_eq!(c.jobs_max_seconds, None);
+        let c = HubConfig::parse(br#"{"jobs": true, "jobsMaxSeconds": 28800}"#);
+        assert!(c.jobs);
+        assert_eq!(c.jobs_max_seconds, Some(28_800));
+        let c = HubConfig::parse(br#"{"jobs": "yes", "jobsMaxSeconds": -1}"#);
+        assert!(!c.jobs);
+        assert_eq!(c.jobs_max_seconds, None);
+    }
+
+    #[test]
     fn root_tilde_expanded() {
         let home = home_dir().to_string_lossy().into_owned();
         assert_eq!(
@@ -319,12 +351,16 @@ mod tests {
             default_permission_mode: "plan".into(),
             allowed_hosts: vec!["a.b".into()],
             tunnel_interfaces: vec!["utun".into(), "wg".into()],
+            jobs: true,
+            jobs_max_seconds: Some(20_000),
         };
         config.save(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let keys: Vec<usize> = [
             "allowedHosts",
             "defaultPermissionMode",
+            "jobs",
+            "jobsMaxSeconds",
             "port",
             "root",
             "tunnelInterfaces",

@@ -14,6 +14,7 @@ use crate::{hook, local, net, paths, procs, service, supervisor};
 const USAGE: &str = "\
 usage: claudeship [claude arguments]   start Claude in this directory, through the hub
        claudeship hub status [--json]   the hub, its web address, and its sessions
+       claudeship run | ask | jobs …    jobs: commands and claude -p runs here or on a peer (claudeship jobs --help)
        claudeship hub link              the link (and QR code) that pairs a browser with the hub
        claudeship hub unlink            unpair every browser, phone, and peer (new secrets; pair again)
        claudeship hub pair <link>       join the swarm of the hub whose link (from its hub link) this is
@@ -252,6 +253,7 @@ fn print_status_json() -> ! {
         "webListening": status.get("webListening").cloned().unwrap_or(json!(false)),
         "swarmId": status.get("swarmId").cloned().unwrap_or(Value::Null),
         "peerRequests": status.get("peerRequests").cloned().unwrap_or(json!(0)),
+        "jobs": status.get("jobs").cloned().unwrap_or(json!(false)),
         "tailnetAddresses": tailnet,
         "sessions": sessions,
     });
@@ -322,6 +324,11 @@ fn print_status() -> ! {
             "web: not listening on port {port} (see {})",
             paths::log().display()
         );
+    }
+    if status.get("jobs").and_then(Value::as_bool) == Some(true) {
+        println!("jobs: enabled (swarm members and paired clients can run commands here; docs/jobs.md)");
+    } else {
+        println!("jobs: disabled (\"jobs\": true in config.json, then restart the hub, to allow them)");
     }
     let sessions = status
         .get("sessions")

@@ -664,3 +664,245 @@ fn a_join_or_hello_naming_an_outside_address_sends_nothing_there() {
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
 }
+
+// MARK: Enrolling from a client (the web page's Computers panel)
+
+impl Hub {
+    /// The pairing link by IP literal, as the invite takes it.
+    fn ip_link(&self) -> String {
+        format!("http://127.0.0.1:{}/auth?k={}", self.port, self.token())
+    }
+
+    fn peers_view(&self) -> Value {
+        let r = self.http("GET", "/api/swarm/peers", &[format!("Cookie: claude_ship={}", self.token())], "");
+        assert_eq!(r.status, 200, "{}", r.text());
+        r.json()
+    }
+}
+
+#[test]
+fn invite_enrols_another_hub_from_here() {
+    let a = Hub::start();
+    let b = Hub::start();
+    let (a_id, b_id) = (a.id(), b.id());
+
+    // Bad links are refused before any connection is made.
+    let before = a.peer_requests();
+    let key = b.token();
+    for link in [
+        format!("http://localhost:{}/auth?k={key}", b.port),
+        format!("https://127.0.0.1:{}/auth?k={key}", b.port),
+        format!("http://127.0.0.1:{}/other?k={key}", b.port),
+        format!("http://192.168.1.1:{}/auth?k={key}", b.port),
+        format!("http://8.8.8.8:{}/auth?k={key}", b.port),
+        "not a link".to_string(),
+    ] {
+        let r = a.post("/api/swarm/invite", json!({"link": link}));
+        assert_eq!(r.status, 400, "{link}: {}", r.text());
+        assert!(!r.text().contains(&key), "the key is never echoed");
+    }
+    assert_eq!(a.post("/api/swarm/invite", json!({})).status, 400);
+    assert_eq!(a.peer_requests(), before, "no outgoing connection for a bad link");
+
+    // The gates: paired, same-origin, JSON.
+    let r = a.http("POST", "/api/swarm/invite", &["Content-Type: application/json".into()], "{}");
+    assert_eq!(r.status, 401);
+    let r = a.http(
+        "POST",
+        "/api/swarm/invite",
+        &[
+            format!("Cookie: claude_ship={}", a.token()),
+            "Origin: http://evil.example".into(),
+            "Content-Type: application/json".into(),
+        ],
+        &json!({"link": b.ip_link()}).to_string(),
+    );
+    assert_eq!(r.status, 403);
+    assert_eq!(a.peer_requests(), before);
+
+    // A wrong key: B refuses it.
+    let r = a.post("/api/swarm/invite", json!({"link": format!("http://127.0.0.1:{}/auth?k=0123abcd", b.port)}));
+    assert_eq!(r.status, 403, "{}", r.text());
+    assert!(a.peer_requests() > before, "that one did go out");
+
+    // Our own link is not another computer.
+    let r = a.post("/api/swarm/invite", json!({"link": a.ip_link()}));
+    assert_eq!(r.status, 400, "{}", r.text());
+
+    // The real thing: B joins A's swarm, and both list each other.
+    let r = a.post("/api/swarm/invite", json!({"link": b.ip_link()}));
+    assert_eq!(r.status, 200, "{}", r.text());
+    let joined = r.json();
+    assert_eq!(joined["ok"], true);
+    assert_eq!(joined["id"], b_id.as_str());
+    assert!(!joined["name"].as_str().unwrap().is_empty());
+    assert_eq!(b.secret(), a.secret(), "B took A's swarm secret");
+    eventually(GOSSIP, "A and B list each other, reachable", || {
+        a.reaches(&b_id) && b.reaches(&a_id)
+    });
+    let view = a.peers_view();
+    assert_eq!(view["self"]["id"], a_id.as_str());
+    let peer = view["peers"].as_array().unwrap().iter().find(|p| p["record"]["id"] == b_id).cloned().unwrap();
+    assert_eq!(peer["reachable"], true, "{peer}");
+    assert_eq!(peer["record"]["protocol"], PROTOCOL);
+    assert!(peer["record"]["addresses"].as_array().unwrap().iter().any(|x| x == &json!(format!("127.0.0.1:{}", b.port))));
+
+    // Removing it through the API: gone from A at once, and B leaves.
+    assert_eq!(a.post("/api/swarm/unpair", json!({"id": a_id})).status, 400, "not itself");
+    assert_eq!(a.post("/api/swarm/unpair", json!({"id": "12345678-1234-4234-8234-123456789abc"})).status, 404);
+    assert_eq!(a.post("/api/swarm/unpair", json!({"id": "B"})).status, 400, "an id, not a name");
+    let r = a.post("/api/swarm/unpair", json!({"id": b_id}));
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert!(a.host(&b_id).is_none(), "gone from A's hosts at once");
+    eventually(GOSSIP, "B hears it was unpaired and leaves", || b.id() != b_id);
+
+    // A stopped target: unreachable.
+    b.stop();
+    let r = a.post("/api/swarm/invite", json!({"link": b.ip_link()}));
+    assert_eq!(r.status, 502, "{}", r.text());
+}
+
+/// A stand-in for the hub a pairing link names, on loopback: answers each
+/// request with `answer(request line, request)` after `delay`, and keeps
+/// every request it got (head and body) for the test to inspect.
+struct FakeHub {
+    port: u16,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl FakeHub {
+    fn start(answer: fn(&str, &str) -> (Duration, String)) -> FakeHub {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let _ = stream.set_read_timeout(Some(5 * SECOND));
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                // The head, then the body by its length.
+                while let Ok(n) = stream.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text[..end]
+                            .lines()
+                            .find_map(|l| l.to_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                            .unwrap_or(0);
+                        if raw.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let request = String::from_utf8_lossy(&raw).to_string();
+                log.lock().unwrap().push(request.clone());
+                let line = request.lines().next().unwrap_or("").to_string();
+                let (delay, response) = answer(&line, &request);
+                std::thread::sleep(delay);
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        FakeHub { port, seen }
+    }
+
+    fn link(&self) -> String {
+        format!("http://127.0.0.1:{}/auth?k=fakekey1", self.port)
+    }
+
+    fn seen(&self) -> Vec<String> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+fn reply(status: &str, headers: &str, body: &str) -> String {
+    format!("HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+}
+
+const FAKE_ID: &str = "0f0f0f0f-1234-4234-8234-123456789abc";
+
+impl Hub {
+    /// `post`, waiting up to a minute for the answer.
+    fn post_patiently(&self, path: &str, body: Value) -> Response {
+        let body = body.to_string();
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: claude_ship={}\r\nOrigin: http://127.0.0.1:{port}\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            self.token(),
+            body.len(),
+            port = self.port,
+        );
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
+        stream.set_read_timeout(Some(60 * SECOND)).unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut raw = Vec::new();
+        let _ = stream.read_to_end(&mut raw);
+        Response::parse(&raw)
+    }
+}
+
+#[test]
+fn invite_against_a_hub_that_misbehaves() {
+    let a = Hub::start();
+    let secret = a.secret();
+
+    // A redirect elsewhere with a cookie that isn't one: not followed, and
+    // nothing more is sent.
+    let fake = FakeHub::start(|_, _| {
+        (Duration::ZERO, reply("303 See Other", "Location: http://127.0.0.1:1/\r\nSet-Cookie: claude_ship=a b; Path=/\r\n", ""))
+    });
+    let before = a.peer_requests();
+    let r = a.post("/api/swarm/invite", json!({"link": fake.link()}));
+    assert_eq!(r.status, 502, "{}", r.text());
+    assert_eq!(a.peer_requests(), before + 1, "one request, no redirect followed");
+    let seen = fake.seen();
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].starts_with("GET /auth?k=fakekey1 HTTP/1.1\r\n"), "{}", seen[0]);
+    assert!(!r.text().contains("fakekey1"), "the key is never echoed");
+
+    // Another protocol: refused before our secret is sent.
+    let fake = FakeHub::start(|line, _| {
+        if line.starts_with("GET /auth") {
+            (Duration::ZERO, reply("303 See Other", "Location: /\r\nSet-Cookie: claude_ship=c00k1e; Path=/; HttpOnly\r\n", ""))
+        } else {
+            let body = json!({"secret": "x", "peers": [{"id": FAKE_ID, "name": "old", "addresses": [], "protocol": 2}]});
+            (Duration::ZERO, reply("200 OK", "Content-Type: application/json\r\n", &body.to_string()))
+        }
+    });
+    let r = a.post("/api/swarm/invite", json!({"link": fake.link()}));
+    assert_eq!(r.status, 409, "{}", r.text());
+    let seen = fake.seen();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(seen[1].starts_with("POST /api/swarm HTTP/1.1\r\n"));
+    assert!(seen[1].contains("Cookie: claude_ship=c00k1e\r\n"));
+    assert!(!seen.iter().any(|s| s.contains(&secret)), "our secret never went out");
+
+    // A slow one, past the 15 s a plain request gets: the connection is
+    // kept for the whole enrolment, and the answer is the join's.
+    let fake = FakeHub::start(|line, _| {
+        let json = "Content-Type: application/json\r\n";
+        if line.starts_with("GET /auth") {
+            (6 * SECOND, reply("303 See Other", "Location: /\r\nSet-Cookie: claude_ship=c00k1e; Path=/\r\n", ""))
+        } else if line.starts_with("POST /api/swarm/join") {
+            (5 * SECOND, reply("200 OK", json, &json!({"ok": true, "id": FAKE_ID}).to_string()))
+        } else {
+            let body = json!({"secret": "x", "peers": [{"id": FAKE_ID, "name": "slow", "addresses": [], "protocol": PROTOCOL}]});
+            (6 * SECOND, reply("200 OK", json, &body.to_string()))
+        }
+    });
+    let started = Instant::now();
+    let r = a.post_patiently("/api/swarm/invite", json!({"link": fake.link()}));
+    assert!(started.elapsed() > 15 * SECOND, "the fake took its time");
+    assert_eq!(r.status, 200, "{}", r.text());
+    assert_eq!(r.json()["name"], "slow");
+    let seen = fake.seen();
+    assert_eq!(seen.len(), 3);
+    assert!(seen[2].starts_with("POST /api/swarm/join HTTP/1.1\r\n"));
+    assert!(seen[2].contains(&format!("Host: 127.0.0.1:{}\r\n", fake.port)));
+    assert!(seen[2].contains(&secret), "the join carries our secret");
+    assert!(a.host(FAKE_ID).is_some(), "merged here");
+}

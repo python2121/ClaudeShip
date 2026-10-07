@@ -9,7 +9,9 @@
 //! | `GET /ws/term?id&rows&cols&claim` | host, same-origin, paired | a terminal (`ws`) |
 //! | `GET /api/state` | host, paired | the directory, cached 1 s |
 //! | `POST /api/launch`, `/api/kill`, `/api/settings`, `/api/approve`, `/api/auto-approve` | host, same-origin, paired, JSON | |
-//! | `POST /api/swarm`, `/api/swarm/join` | host, same-origin, paired, JSON | the swarm (`swarm.rs`) |
+//! | `POST /api/swarm`, `/api/swarm/join`, `/api/swarm/invite`, `/api/swarm/unpair` | host, same-origin, paired, JSON | the swarm (`swarm.rs`) |
+//! | `GET /api/swarm/peers` | host, paired | what `hub peers` prints |
+//! | `GET /api/jobs…`, `POST /api/jobs…` | host, paired; POSTs same-origin JSON | jobs (`jobs.rs`); `config.jobs` off → 403 |
 //! | `/peer/*` | host, swarm bearer, POSTs JSON with no foreign Origin | `peer.rs` |
 //! | `/peer/api/*`, `GET /peer/ws/term` | same (the upgrade needs no Origin) | `peer_api.rs`: a peer's relayed action or terminal |
 //! | `GET /*` | host | the page's files |
@@ -35,7 +37,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::security::{
     constant_time_equals, cookie, is_allowed_host, is_same_origin, percent_decode,
 };
-use super::{ConnectionSlot, Shared, assets, peer, peer_api, proxy, ws};
+use super::{ConnectionSlot, Patience, Shared, assets, jobs, peer, peer_api, proxy, ws};
 use crate::approvals::Rule;
 use crate::config::HubConfig;
 use crate::hub::{Command, clamp_size};
@@ -75,15 +77,22 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/api/auto-approve", any(api_post))
         .route("/api/swarm", any(api_post))
         .route("/api/swarm/join", any(api_post))
+        .route("/api/jobs", any(api_jobs))
+        .route("/api/jobs/{*rest}", any(api_jobs))
+        .route("/api/swarm/invite", any(api_post))
+        .route("/api/swarm/unpair", any(api_post))
+        .route("/api/swarm/peers", any(api_swarm_peers))
         .merge(peer::router(peer::LocalOnly {
             hub: shared.hub.clone(),
             state: shared.state.clone(),
             book: shared.swarm.book.clone(),
+            jobs: shared.jobs.clone(),
         }))
         .merge(peer_api::router(peer::LocalOnly {
             hub: shared.hub.clone(),
             state: shared.state.clone(),
             book: shared.swarm.book.clone(),
+            jobs: shared.jobs.clone(),
         }))
         .fallback(fallback)
         .layer(from_fn_with_state(shared.clone(), gate))
@@ -358,6 +367,62 @@ async fn api_state(State(shared): State<Arc<Shared>>, request: Request) -> Respo
     json_response(200, Value::Object(state))
 }
 
+/// `GET /api/swarm/peers`: this hub's record and every peer's (tombstones
+/// included), with whether the last poll reached it — `hub peers`.
+async fn api_swarm_peers(State(shared): State<Arc<Shared>>, request: Request) -> Response {
+    let gate = gate_of(&request);
+    if request.method() != Method::GET {
+        return other(request.method(), &gate);
+    }
+    json_response(200, shared.swarm.book.view())
+}
+
+/// `/api/jobs…` (`jobs.rs`): here, or relayed to the hub named by `host`
+/// (the body's for a POST, the query's for a GET). A relayed GET gets its
+/// `wait` plus 5 s to answer; this connection, its wait plus 10.
+async fn api_jobs(State(shared): State<Arc<Shared>>, request: Request) -> Response {
+    let gate = gate_of(&request);
+    let method = request.method().clone();
+    let patience = request.extensions().get::<Patience>().cloned();
+    let rest = gate.path.strip_prefix("/api/jobs").unwrap_or("").to_string();
+    let body = match method {
+        Method::GET => None,
+        Method::POST => {
+            let json_type = header_text(request.headers(), header::CONTENT_TYPE)
+                .is_some_and(|t| t.to_lowercase().starts_with("application/json"));
+            let body = read_json_object(request).await;
+            let Some(body) = body.filter(|_| gate.same_origin && json_type && gate.paired) else {
+                return json_response(403, json!({"error": "refused"}));
+            };
+            Some(body)
+        }
+        _ => return text(405, "method not allowed"),
+    };
+    let host = match &body {
+        Some(body) => body.get("host").cloned(),
+        None => gate.query.get("host").map(|h| Value::String(h.clone())),
+    };
+    match proxy::target(&shared, host.as_ref()) {
+        Err(refusal) => refusal.response(),
+        Ok(Some(route)) => match body {
+            Some(body) => proxy::forward(&shared, route, &gate.path, body).await,
+            None => {
+                let wait = jobs::wait_seconds(&gate.query);
+                if let Some(patience) = &patience {
+                    patience.extend(wait + 10);
+                }
+                let query = proxy::query_without_host(&gate.query);
+                let target = if query.is_empty() { gate.path.clone() } else { format!("{}?{query}", gate.path) };
+                proxy::forward_get(&shared, route, &target, std::time::Duration::from_secs(wait + 5)).await
+            }
+        },
+        Ok(None) => {
+            let id = shared.swarm.book.id();
+            jobs::local(&shared.jobs, &id, &method, &rest, &gate.query, body, patience.as_ref()).await
+        }
+    }
+}
+
 /// A request's body as a JSON object (at most `MAX_BODY`).
 pub(super) async fn read_json_object(request: Request) -> Option<Map<String, Value>> {
     let body = axum::body::to_bytes(request.into_body(), MAX_BODY).await.ok()?;
@@ -380,6 +445,7 @@ fn hub_gone() -> Response {
 
 async fn api_post(State(shared): State<Arc<Shared>>, request: Request) -> Response {
     let gate = gate_of(&request);
+    let patience = request.extensions().get::<Patience>().cloned();
     if request.method() != Method::POST {
         return other(request.method(), &gate);
     }
@@ -415,6 +481,35 @@ async fn api_post(State(shared): State<Arc<Shared>>, request: Request) -> Respon
             match shared.swarm.join(&secret, peers).await {
                 Ok(value) => json_response(200, value),
                 Err(e) => json_response(400, json!({"error": e})),
+            }
+        }
+        "/api/swarm/invite" => {
+            // Enrol another computer: its pairing link, followed from here
+            // (a browser paired with us can't post to it).
+            let Some(link) = string("link") else {
+                return json_response(400, json!({"error": "invite needs the other computer's pairing link"}));
+            };
+            // Its three steps may take longer than a plain request is
+            // given: don't let the connection be dropped mid-enrolment.
+            if let Some(patience) = &patience {
+                patience.extend(crate::swarm::INVITE_BUDGET.as_secs() + 5);
+            }
+            match shared.swarm.invite(&link).await {
+                Ok(value) => json_response(200, value),
+                Err((status, error)) => json_response(status, json!({"error": error})),
+            }
+        }
+        "/api/swarm/unpair" => {
+            let book = &shared.swarm.book;
+            let Some(id) = string("id").filter(|id| crate::web::state::is_session_id(id)) else {
+                return json_response(400, json!({"error": "unpair needs a hub's id"}));
+            };
+            if id.eq_ignore_ascii_case(&book.id()) {
+                return json_response(400, json!({"error": "that is this hub; it can't remove itself"}));
+            }
+            match book.unpair(&id) {
+                Ok(record) => json_response(200, json!({"ok": true, "record": record.to_value()})),
+                Err(e) => json_response(404, json!({"error": e})),
             }
         }
         // Another hub's session or settings: forwarded there.

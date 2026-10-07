@@ -8,6 +8,7 @@ pub mod args;
 mod attach;
 mod client;
 mod hub_cmd;
+mod jobs_cmd;
 mod pair;
 mod qr;
 
@@ -25,6 +26,13 @@ pub use client::fail;
 pub fn run(args: Vec<OsString>) -> ! {
     if args.first().is_some_and(|a| a == "hub") {
         hub_cmd::run(&args[1..]);
+    }
+    // Jobs (docs/jobs.md): `run`, `ask`, and `jobs` are ours, not prompts.
+    if let Some(command) = args.first().and_then(|a| a.to_str())
+        && matches!(command, "run" | "ask" | "jobs")
+    {
+        let rest: Vec<String> = args[1..].iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        jobs_cmd::run(command, &rest);
     }
     // SAFETY: isatty has no preconditions.
     let tty = unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 };

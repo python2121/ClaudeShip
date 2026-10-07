@@ -120,7 +120,11 @@
     filter: '',
     open: new Set(),   // project paths whose recent conversations are showing
     paintedAt: 0,
-    menu: null,        // 'settings', or the project path whose mode menu is open
+    menu: null,        // 'settings', 'computers', or the project path whose mode menu is open
+    peers: null,       // GET /api/swarm/peers while the Computers panel is open
+    peersError: null,
+    removeArmed: null, // the peer id whose Remove is waiting for its confirming click
+    removing: null,
     launching: false,
     answering: new Set(),  // approval ids / session ids with a request in flight
     signature: '',
@@ -307,6 +311,8 @@
       polling = false;
     }
     if (!ui.data) ui.menu = null;  // nothing for a menu to act on; don't let it hold the page
+    if (ui.menu === 'computers' && !(ui.data && Array.isArray(ui.data.hosts))) ui.menu = null;
+    if (ui.menu === 'computers') loadPeers();
     quickEl.hidden = !(localView() && localView().home);
     quickEl.disabled = ui.launching;
     render(force);
@@ -429,7 +435,13 @@
       waiting ? h('span', { class: 'pill waiting' }, h('span', { class: 'glyph waiting' }), `${waiting} need${waiting === 1 ? 's' : ''} you`) : '',
       busy ? h('span', { class: 'pill busy' }, h('span', { class: 'glyph busy' }), `${busy} working`) : '',
       h('span', { class: 'pill' }, `${total} session${total === 1 ? '' : 's'}`));
-    repaint(settingsEl, settings(local, multi));
+    if (ui.menu === 'computers' && settingsEl.contains(computersEl)) {
+      // Moving the panel would drop the link field's focus (and a phone's
+      // keyboard): refresh its list in place instead.
+      paintComputers();
+    } else {
+      repaint(settingsEl, settings(local, multi));
+    }
 
     const parts = [...banners];
     if (!multi) {
@@ -711,13 +723,22 @@
   }
 
   function settings(data, multi) {
-    const open = ui.menu === 'settings';
+    // An older hub has no swarm: no Computers panel.
+    const swarm = Boolean(ui.data && Array.isArray(ui.data.hosts));
+    const computers = swarm && ui.menu === 'computers';
+    const open = ui.menu === 'settings' || computers;
+    if (computers) paintComputers();
     return [
       h('button', {
         class: 'icon-btn', 'aria-label': 'Settings', 'aria-expanded': String(open), 'data-key': 'gear',
         onclick: () => { ui.menu = open ? null : 'settings'; render(true); },
       }, icon('gear')),
-      open && h('div', { class: 'menu right settings' },
+      computers && computersEl,
+      ui.menu === 'settings' && h('div', { class: 'menu right settings' },
+        swarm && h('button', {
+          class: 'menu-item computers-entry', 'data-key': 'computers',
+          onclick: () => openComputers(),
+        }, h('b', null, 'Computers…'), h('small', null, 'The machines whose sessions this page shows, and adding another')),
         h('h4', null, 'New sessions start in'),
         h('p', null, multi ? `For ${data.name}. Used by New session and Resume on this page; other machines keep their own setting. The arrow beside New session picks a different mode for one launch.` : 'Used by New session and Resume on this page. The arrow beside New session picks a different mode for one launch.'),
         h('div', { class: 'options', role: 'radiogroup' },
@@ -731,6 +752,161 @@
         !multi && h('div', { class: 'foot' },
           'Projects are the folders in ', h('code', null, data.rootDisplay), ' on ', h('code', null, data.name), '.')),
     ];
+  }
+
+  // ── Computers (the swarm) ────────────────────────────────
+  //
+  // A browser paired with this hub can't post to another one (its Origin
+  // check refuses us, on purpose), so the page hands the other machine's
+  // pairing link to this hub, which pairs with it and brings it into the
+  // swarm (POST /api/swarm/invite). The field and the note are built once
+  // and kept, like the pairing form: a repaint must not wipe a pasted link.
+
+  const computersListEl = h('div', { class: 'computers-list' });
+  const computersNoteEl = h('p', { class: 'computers-note', role: 'status', hidden: true });
+  const inviteFieldEl = h('input', {
+    class: 'search', name: 'link', type: 'text', placeholder: 'http://100.x.y.z:7433/auth?k=…',
+    'aria-label': "The other computer's pairing link", 'data-key': 'invite-link',
+    autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
+  });
+  const inviteButtonEl = h('button', { class: 'btn primary', type: 'submit' }, 'Add');
+  const computersEl = h('div', { class: 'menu right settings computers' },
+    h('h4', null, 'Computers'),
+    h('p', null, 'This page shows the sessions of every machine in this hub\'s swarm.'),
+    computersListEl,
+    h('h4', { class: 'computers-add' }, 'Add a computer'),
+    h('p', null, 'On the other computer run ', h('code', null, 'claudeship hub link'), ' and paste the link here.'),
+    h('form', { class: 'pair-form invite-form', onsubmit: (event) => { event.preventDefault(); invite(); } },
+      inviteFieldEl, inviteButtonEl),
+    computersNoteEl);
+
+  function computersNote(text, isError) {
+    computersNoteEl.textContent = text || '';
+    computersNoteEl.hidden = !text;
+    computersNoteEl.classList.toggle('error', Boolean(isError));
+  }
+
+  function openComputers() {
+    ui.menu = 'computers';
+    ui.removeArmed = null;
+    computersNote('');
+    loadPeers();
+    render(true);
+  }
+
+  async function loadPeers() {
+    try {
+      const response = await fetch('/api/swarm/peers', { cache: 'no-store' });
+      if (!response.ok) throw new Error(String(response.status));
+      ui.peers = await response.json();
+      ui.peersError = null;
+    } catch (error) {
+      ui.peersError = error.message === '404'
+        ? 'This hub is an older build that cannot list its swarm here; see claudeship hub peers.'
+        : "Couldn't load the list of computers.";
+    }
+    if (ui.menu === 'computers') paintComputers();
+  }
+
+  function addressLine(record) {
+    const list = Array.isArray(record.addresses) ? record.addresses : [];
+    return h('div', { class: 'computer-addr' }, list.length ? list.join('  ') : 'no address');
+  }
+
+  function protocolMark(record) {
+    return record.protocol !== PROTOCOL && h('span', {
+      class: 'tag warn', title: 'A different ClaudeShip build than this page: restart it when its sessions can end.',
+    }, `protocol ${record.protocol}`);
+  }
+
+  function paintComputers() {
+    const peers = ui.peers;
+    const items = [];
+    if (ui.peersError) items.push(h('div', { class: 'computer-empty' }, ui.peersError));
+    else if (!peers) items.push(h('div', { class: 'computer-empty' }, 'Loading…'));
+    else {
+      const me = peers.self || {};
+      items.push(h('div', { class: 'computer' },
+        h('div', { class: 'computer-head' },
+          h('b', null, me.name || 'This computer'), h('span', { class: 'tag' }, 'This hub'), protocolMark(me)),
+        addressLine(me)));
+      const list = (Array.isArray(peers.peers) ? peers.peers : [])
+        .filter((p) => p && p.record && p.record.tombstone == null)
+        .sort((a, b) => String(a.record.name).localeCompare(String(b.record.name)));
+      for (const peer of list) items.push(computerRow(peer));
+      if (!list.length) items.push(h('div', { class: 'computer-empty' }, 'No other computers yet.'));
+    }
+    repaint(computersListEl, items);
+  }
+
+  function computerRow(peer) {
+    const record = peer.record;
+    const id = String(record.id);
+    const name = record.name || id;
+    let state;
+    if (peer.reachable) state = 'Reachable';
+    else if (peer.refused) state = 'Refuses this swarm (it must pair again)';
+    else if (Number.isFinite(record.lastSeen) && record.lastSeen > 0) state = `Unreachable since ${ago(record.lastSeen, localView())}`;
+    else state = 'Not reached yet';
+    const armed = ui.removeArmed === id;
+    return h('div', { class: `computer${peer.reachable ? '' : ' down'}` },
+      h('div', { class: 'computer-head' },
+        h('b', null, name), protocolMark(record),
+        h('button', {
+          class: `btn quiet remove${armed ? ' confirm' : ''}`, 'data-key': `remove:${id}`,
+          disabled: ui.removing === id,
+          title: armed ? `Click again to remove ${name} from every computer in the swarm` : `Remove ${name}`,
+          onclick: () => removeComputer(id, name),
+        }, armed ? 'Remove?' : 'Remove')),
+      addressLine(record),
+      h('div', { class: 'computer-state' }, state));
+  }
+
+  let removeTimer = null;
+  async function removeComputer(id, name) {
+    if (ui.removing) return;
+    if (ui.removeArmed !== id) {
+      ui.removeArmed = id;
+      clearTimeout(removeTimer);
+      removeTimer = setTimeout(() => { ui.removeArmed = null; if (ui.menu === 'computers') paintComputers(); }, 3000);
+      paintComputers();
+      return;
+    }
+    clearTimeout(removeTimer);
+    ui.removeArmed = null;
+    ui.removing = id;
+    paintComputers();
+    try {
+      await post('/api/swarm/unpair', { id });
+      computersNote(`Removed ${name}. The other computers drop it within a few seconds.`, false);
+    } catch (error) {
+      computersNote(`Couldn't remove ${name}: ${error.message}`, true);
+    }
+    ui.removing = null;
+    await loadPeers();
+    poll(true);
+  }
+
+  async function invite() {
+    const link = inviteFieldEl.value.trim();
+    if (!link) {
+      computersNote("Paste the other computer's pairing link first.", true);
+      return;
+    }
+    if (inviteButtonEl.disabled) return;
+    inviteButtonEl.disabled = true;
+    computersNote('Adding…', false);
+    try {
+      const result = await post('/api/swarm/invite', { link });
+      inviteFieldEl.value = '';
+      computersNote(`Added ${result.name || 'the computer'}.`, false);
+      await loadPeers();
+      poll(true);
+    } catch (error) {
+      computersNote(error.status ? error.message : "Can't reach the hub on this computer.", true);
+    } finally {
+      inviteButtonEl.disabled = false;
+    }
   }
 
   function toggleOpen(path) {

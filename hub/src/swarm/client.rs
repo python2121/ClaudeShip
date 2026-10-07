@@ -17,6 +17,8 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+use crate::token::COOKIE_NAME;
+
 /// The largest answer read from a peer (a big directory is a few hundred KB).
 const MAX_ANSWER: usize = 16 << 20;
 
@@ -104,19 +106,69 @@ impl PeerClient {
     /// know whether the request may have reached the peer (from here on,
     /// it may have) — the proxy's forwarded POSTs, which must not run twice.
     pub async fn exchange(
-        mut stream: TcpStream,
+        stream: TcpStream,
         address: &str,
         method: &str,
         path: &str,
         secret: &str,
         body: Option<&Value>,
     ) -> Result<(u16, Value), PeerError> {
+        let auth = format!("Authorization: Bearer {secret}\r\n");
+        let Answer { status, body, .. } = Self::send(stream, address, method, path, &auth, body).await?;
+        let value = if body.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&body).map_err(|_| PeerError::Body)?
+        };
+        Ok((status, value))
+    }
+
+    /// One request to a hub that is not (yet) a peer — enrolling it from
+    /// here (`Swarm::invite`) — with its pairing `cookie` rather than the
+    /// swarm secret, answered within `timeout`: the whole answer, headers
+    /// included (the pairing link's 303 carries the cookie). Counted and
+    /// held to dialable addresses like every other request.
+    pub async fn visit(
+        &self,
+        address: &str,
+        method: &str,
+        path: &str,
+        cookie: Option<&str>,
+        body: Option<&Value>,
+        timeout: Duration,
+    ) -> Result<Answer, PeerError> {
+        // Only a cookie as a hub mints it: nothing that could end the line.
+        if cookie.is_some_and(|c| !c.bytes().all(|b| b.is_ascii_alphanumeric())) {
+            return Err(PeerError::Body);
+        }
+        let auth = cookie
+            .map(|c| format!("Cookie: {COOKIE_NAME}={c}\r\n"))
+            .unwrap_or_default();
+        let attempt = async {
+            let stream = self.connect(address).await?;
+            Self::send(stream, address, method, path, &auth, body).await
+        };
+        tokio::time::timeout(timeout, attempt)
+            .await
+            .map_err(|_| PeerError::Timeout)?
+    }
+
+    /// Write one request (`auth`: its credential header line, CRLF-ended)
+    /// and read the answer to EOF.
+    async fn send(
+        mut stream: TcpStream,
+        address: &str,
+        method: &str,
+        path: &str,
+        auth: &str,
+        body: Option<&Value>,
+    ) -> Result<Answer, PeerError> {
         let io = |e: std::io::Error| PeerError::Io(e.to_string());
         let payload = body.map(Value::to_string).unwrap_or_default();
         // `SocketAddr` prints an IPv6 literal bracketed: what the peer's
         // Host check takes.
         let mut head = format!(
-            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {secret}\r\n\
+            "{method} {path} HTTP/1.1\r\nHost: {address}\r\n{auth}\
              Connection: close\r\nContent-Length: {}\r\n",
             payload.len()
         );
@@ -132,13 +184,7 @@ impl PeerClient {
             .read_to_end(&mut raw)
             .await
             .map_err(io)?;
-        let Answer { status, body, .. } = parse_response(&raw).ok_or(PeerError::Body)?;
-        let value = if body.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_slice(&body).map_err(|_| PeerError::Body)?
-        };
-        Ok((status, value))
+        parse_response(&raw).ok_or(PeerError::Body)
     }
 }
 

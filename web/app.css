@@ -458,6 +458,29 @@ button.session-go:hover { text-decoration: underline; }
   color: var(--faint); font-size: 12px; line-height: 1.5;
 }
 .settings .foot code { font: 11.5px var(--mono); color: var(--dim); }
+.settings .computers-entry { margin: -4px -6px 10px; width: calc(100% + 12px); }
+
+/* The Computers panel: the swarm's members and adding one. */
+.computers { width: min(400px, calc(100vw - 32px)); max-height: calc(100vh - 90px); overflow-y: auto; }
+.computers-list { display: grid; gap: 2px; margin-bottom: 12px; }
+.computer { padding: 7px 8px; border-radius: 8px; }
+.computer + .computer { border-top: 1px solid var(--line); border-radius: 0; }
+.computer-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.computer-head b { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.computer-head .tag {
+  font-size: 10.5px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase; color: var(--accent);
+}
+.computer-head .tag.warn { color: var(--orange); }
+.computer-head .remove { margin-left: auto; height: 26px; padding: 0 10px; font-size: 12.5px; }
+.computer-head .remove.confirm { background: #b3402e; color: #fff; }
+.computer-addr { font: 11.5px var(--mono); color: var(--dim); overflow-wrap: anywhere; margin-top: 2px; }
+.computer-state { color: var(--faint); font-size: 12px; margin-top: 2px; }
+.computer.down .computer-state { color: var(--orange); }
+.computer-empty { padding: 6px 8px; color: var(--faint); font-size: 12.5px; }
+.computers .computers-add { padding-top: 11px; border-top: 1px solid var(--line); }
+.invite-form { margin: 0; max-width: none; }
+.computers-note { margin: 10px 0 0 !important; font-size: 12.5px; color: var(--dim); overflow-wrap: anywhere; }
+.computers-note.error { color: var(--orange); }
 
 /* ── Terminal view ──────────────────────────────────────── */
 

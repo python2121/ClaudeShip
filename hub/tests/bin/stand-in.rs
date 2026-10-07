@@ -16,6 +16,16 @@
 //!   fg              print FOREGROUND if it started in the terminal's
 //!                   foreground group (else BACKGROUND), exit 0
 //!   fds             print `FDS` and every open descriptor above 2, exit 0
+//!   sleep <s>       print START, sleep, print END, exit 0 (jobs)
+//!   ignore-term     ignore SIGTERM, print IGNORING-TERM, wait forever (jobs)
+//!   ticks <n> <ms>  print `TICK <i>` n times, ms apart, exit 0 (jobs)
+//!   -p <prompt> …   `claude -p` with stream-json (jobs): a `system` init and
+//!                   an `assistant` line, then the prompt's command, then a
+//!                   `result` "echo: <prompt>" (plus " resumed" under
+//!                   `--resume`), the session id the resumed one or a new
+//!                   one. Prompt commands: `sleep <s>`, `ignore-term`
+//!                   (forever), `mb <n>` (n MB of assistant lines),
+//!                   `exit <code>`, `stderr` (a line on stderr)
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -131,6 +141,38 @@ fn main() {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     let mode = args.first().map(String::as_str).unwrap_or("echo");
+    if mode == "-p" {
+        print_mode(&args);
+    }
+    match mode {
+        "sleep" => {
+            out(b"START\n");
+            std::thread::sleep(std::time::Duration::from_secs_f64(
+                args.get(1).and_then(|a| a.parse().ok()).unwrap_or(1.0),
+            ));
+            out(b"END\n");
+            return;
+        }
+        "ignore-term" => {
+            // SAFETY: setting a disposition.
+            unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
+            out(b"IGNORING-TERM\n");
+            loop {
+                // SAFETY: pause has no preconditions.
+                unsafe { libc::pause() };
+            }
+        }
+        "ticks" => {
+            let n: u64 = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(3);
+            let ms: u64 = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(100);
+            for i in 0..n {
+                out(format!("TICK {i}\n").as_bytes());
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+            return;
+        }
+        _ => {}
+    }
     let number = |default: u64| args.get(1).and_then(|a| a.parse().ok()).unwrap_or(default);
     if mode != "blast" {
         raw_mode();
@@ -200,4 +242,63 @@ fn main() {
             echo_loop();
         }
     }
+}
+
+/// `claude -p <prompt> … --output-format stream-json [--resume <id>]`.
+fn print_mode(args: &[String]) -> ! {
+    let prompt = args.get(1).cloned().unwrap_or_default();
+    let value_of = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    let resumed = value_of("--resume");
+    let session = resumed.clone().unwrap_or_else(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0) as u64;
+        let pid = u64::from(std::process::id());
+        format!(
+            "{:08x}-{:04x}-4{:03x}-8{:03x}-{:012x}",
+            (nanos >> 16) as u32,
+            (pid & 0xffff) as u16,
+            nanos & 0xfff,
+            (nanos >> 12) & 0xfff,
+            nanos & 0xffff_ffff_ffff
+        )
+    });
+    let line = |v: serde_json::Value| out(format!("{v}\n").as_bytes());
+    line(serde_json::json!({
+        "type": "system", "subtype": "init", "session_id": session,
+        "permissionMode": value_of("--permission-mode"), "cwd": std::env::current_dir().ok(),
+    }));
+    line(serde_json::json!({"type": "assistant", "session_id": session, "message": {"content": [{"type": "text", "text": prompt}]}}));
+    let words: Vec<&str> = prompt.split_whitespace().collect();
+    let number = |i: usize| words.get(i).and_then(|w| w.parse::<f64>().ok()).unwrap_or(1.0);
+    let mut code = 0;
+    match words.first().copied() {
+        Some("sleep") => std::thread::sleep(std::time::Duration::from_secs_f64(number(1))),
+        Some("ignore-term") => {
+            // SAFETY: setting a disposition; pause has no preconditions.
+            unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
+            loop {
+                unsafe { libc::pause() };
+            }
+        }
+        Some("mb") => {
+            let filler = "y".repeat(1000);
+            for _ in 0..(number(1) as usize * 1000) {
+                line(serde_json::json!({"type": "assistant", "text": filler}));
+            }
+        }
+        Some("exit") => code = number(1) as i32,
+        Some("stderr") => eprintln!("a line on stderr"),
+        _ => {}
+    }
+    let mut text = format!("echo: {prompt}");
+    if resumed.is_some() {
+        text.push_str(" resumed");
+    }
+    line(serde_json::json!({
+        "type": "result", "subtype": "success", "is_error": code != 0,
+        "result": text, "session_id": session,
+    }));
+    std::process::exit(code);
 }

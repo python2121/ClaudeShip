@@ -29,6 +29,7 @@ claudeship hub supervise <argv>     internal: session leader on a pty
 claudeship hub install-hook | uninstall-hook          the PermissionRequest hook in Claude's settings
 claudeship hub install-service | uninstall-service [--no-load]   the hub as a login service
 claudeship permission-hook          the hook helper (Claude Code runs it; see approvals.md)
+claudeship run | ask | jobs …       jobs here or on a peer (see jobs.md)
 ```
 
 **The login service.** `install-service` writes, on macOS,
@@ -83,7 +84,8 @@ socket path must fit `sun_path`, 104 bytes on macOS). Defaults: macOS
 browsers keep working); Linux `$XDG_STATE_HOME/claudeship`, else
 `~/.local/state/claudeship`. Inside: `hub.sock` (0600, created under a 0177 umask so there is no window before the chmod), `hub.lock` (flock,
 0600), `hub.log` (rotated to `hub.log.1` past 2 MB at a start),
-`config.json`, `token` (the pairing secret: 64 hex characters from
+`config.json` (`jobs`, default false, and `jobsMaxSeconds` switch on
+and cap jobs — `jobs.md`), `token` (the pairing secret: 64 hex characters from
 `getrandom`, written to `token.new` and renamed, 0600), `approvals.sock`
 (0600, bound under the same umask as `hub.sock`), `swarm.secret` and
 `peers.json` (the swarm, below; both 0600, written the same atomic way). `CLAUDESHIP_CMD`
@@ -114,6 +116,9 @@ read per request, instead of the copy built into the binary.
 | `web/peer_api.rs` | `/peer/api/*` and `/peer/ws/term`: a peer's relayed action or terminal, on `LocalOnly` |
 | `web/proxy.rs` | a client's action or terminal naming another host: route, protocol check, POST forwarding, the WebSocket relay |
 | `cli/pair.rs` | `hub pair`, `hub peers`, `hub unpair` |
+| `jobs.rs` | jobs (`jobs.md`): spawn on pipes under the login-shell recipe in a group of its own, bounded stdout/stderr, the stream-json session id, the wall clock, retention and eviction, `hub stop`'s kill |
+| `web/jobs.rs` | the jobs routes, shared by `/api/jobs…` and `/peer/api/jobs…`; `config.jobs` off → 403 |
+| `cli/jobs_cmd.rs` | `claudeship run`, `ask`, `jobs …` over loopback HTTP |
 | `web/server.rs` | the listener, the connection gate, serving a connection, the unanswered-request sweep |
 | `web/router.rs` | the request gate (Host, Origin, cookie), the routes, the response headers |
 | `web/ws.rs` | a browser terminal: one WebSocket as a hub client |
@@ -239,8 +244,13 @@ answered within 15 s is dropped.
 | `POST /api/auto-approve` `{sessionId, rule}` | same | `{ok}` (`5m`, `session`, `off`); 400 |
 | `POST /api/swarm` `{}` | same | `{secret, peers}` (see "The swarm") |
 | `POST /api/swarm/join` `{secret, peers}` | same | `{ok, id, hello: [{id, name, ok, error}], rotated: [{id, name, ok}]}`; 400 |
+| `POST /api/swarm/invite` `{link}` | same | `{ok, name, id}`; `{error}` with 400 (bad link), 403 (its key refused), 409 (other protocol, or no swarm), 502 (not reached) |
+| `POST /api/swarm/unpair` `{id}` | same | `{ok, record}`; 400 (not an id, or this hub), 404 |
+| `GET /api/swarm/peers` | host, paired | `{self, peers: [{record, reachable, refused}]}` — what `hub peers` prints |
 | `/peer/hello`, `/peer/rotate`, `/peer/state` | host, swarm bearer (401 `{"error":"not a peer"}`), POSTs JSON with no foreign Origin (403) | see "The swarm" |
 | `POST /peer/api/launch\|kill\|settings\|approve\|auto-approve`, `GET /peer/ws/term?id&rows&cols&claim` | same (the upgrade needs no Origin) | as `/api/…` and `/ws/term`; 400 if the request names a `host` |
+| `POST /api/jobs`, `GET /api/jobs`, `GET /api/jobs/<id>?since&wait&consume`, `POST /api/jobs/<id>/kill` (each with `host`) | host, paired; POSTs same-origin JSON | jobs, see `jobs.md`: remote command execution, off unless `config.jobs` (403 `{"error":"jobs disabled on this host"}`); a `wait` long-poll (≤ 60 s) is exempt from the 15 s sweep |
+| `GET\|POST /peer/api/jobs…` | as `/peer/api/*` | as `/api/jobs…`, run here; 400 if it names a `host` |
 | `GET /*` | host | the page's files: `.`-prefixed or empty components refused, html/js/css/svg/png/json/webmanifest only |
 
 Every answer but the 101 carries `Cache-Control: no-store`,
@@ -341,6 +351,25 @@ across peer requests to a hub with `CLAUDESHIP_GOSSIP=0` (no poller).
   to them with our *old* secret (so our old swarm merges into the new one);
   adopt the secret; merge the records; `POST /peer/hello` to each member.
   If that swarm carries a tombstone of our id, we take a new id first.
+- `POST /api/swarm/invite {link}` (paired client, on a member): enrol
+  another computer from here — the web page's Computers panel. A browser
+  paired with us can't post to the other hub (its Origin check refuses a
+  foreign page, on purpose), so we follow its pairing link ourselves.
+  The link must be exactly `http://<ip literal>:<port>/auth?k=<key>`
+  (`swarm::parse_invite_link`, unit-tested): no DNS name (we are about to
+  hand over the swarm secret, and whoever runs DNS could point a name
+  anywhere), no other scheme or path, the address a peer address
+  (tailnet, or loopback under the test knob) — anything else is 400 before
+  any connection. Then, over `PeerClient::visit` (counted, dialable
+  addresses only, the cookie in place of the bearer): `GET /auth?k=` →
+  the 303's cookie (403 if refused); `POST /api/swarm` there for its
+  record (409 if its protocol differs or it has none); `POST
+  /api/swarm/join {secret: ours, peers: our records}` there, so it joins
+  our swarm and greets every member, us included (502 if any step isn't
+  reached). Its record is merged here as well, in case its hello didn't
+  reach us. The key is never logged or echoed.
+- `POST /api/swarm/unpair {id}`: `hub unpair` by full id, for the page.
+- `GET /api/swarm/peers`: the socket's `peers` view, for the page.
 - `POST /peer/hello {record}` → `{record: ours, peers}`: the newcomer is
   recorded (its `lastSeen` = our now); 410 if it is tombstoned here.
 - `POST /peer/rotate {newSecret, peers}` (bearer: the old secret) →
@@ -480,7 +509,10 @@ file with other hooks and the Swift helper's entry, and `install-service
 `swarm.rs` (in `hub/tests/`) runs two or three private hubs with
 `CLAUDESHIP_ADVERTISE_LOOPBACK=1`: a phone-style join (`/api/swarm` from
 A posted to B's `/api/swarm/join`) and both listing each other, a third
-hub joining through B by `hub pair` and appearing on A, `hosts[]` with B's
+hub joining through B by `hub pair` and appearing on A, an
+`/api/swarm/invite` enrolling B from A (a DNS name, `https`, another path,
+a non-tailnet address → 400 with `peerRequests` unchanged; a wrong key →
+403; a stopped target → 502) and `/api/swarm/unpair` removing it, `hosts[]` with B's
 session and B's `now` from A, an unreachable peer keeping its last state,
 `hub unpair` of a stopped hub reaching the third and the unpaired one
 leaving when it comes back, `unlink`'s rotation (the old secret refused,
@@ -501,6 +533,18 @@ the refusals: 404 unknown host (POST and upgrade), 400 a `/peer/api/*` or
 `/peer/ws/term` naming a host (with no peer request made by B), 401 with
 no bearer, 502 with B stopped, 409 with B's protocol edited in A's
 `peers.json` (and no connection attempted).
+
+`jobs.rs` (in `hub/tests/`) runs private hubs with `"jobs": true` and the
+stand-in's job modes (`-p` stream-json, `sleep`, `ticks`, `ignore-term`):
+run/wait/output/kill over HTTP and the CLI, the session id parsed and a
+`--resume` follow-up carrying it, `waitingFor` from a registry entry,
+`ask` end to end (result, `session:`, `-v`, exit code, the cap's 124),
+truncation at 4 MB, `consume`, the keep time (`CLAUDESHIP_JOBS_KEEP_SECONDS`,
+a test knob) and eviction at 64, `wait` waking on output and on the finish
+past the 15 s sweep, the cwd rules and `env`, `config.jobs` off → 403
+everywhere, `hub stop` killing jobs, the wall clock (SIGTERM; SIGKILL 10 s
+later for one that ignores it), and a job relayed through a peer with a
+long-poll past the proxy's 3 s and `ask --host`.
 
 `web.rs` does the same for the web face, with `HOME` and the project root
 inside the scratch directory too, and hand-written HTTP and WebSocket

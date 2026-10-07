@@ -13,6 +13,7 @@
 //! |---|---|
 //! | `POST /peer/api/launch`, `kill`, `settings`, `approve`, `auto-approve` | the same body and answer as `/api/…` |
 //! | `GET /peer/ws/term?id&rows&cols&claim` | the same attachment as `/ws/term` |
+//! | `GET\|POST /peer/api/jobs…` | the same as `/api/jobs…` (`jobs.rs`), run here |
 
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
@@ -24,7 +25,7 @@ use serde_json::json;
 
 use super::peer::LocalOnly;
 use super::router::{MAX_MESSAGE, attach_from, gate_of, json_response, local_action, read_json_object, text};
-use super::{ConnectionSlot, ws};
+use super::{ConnectionSlot, Patience, ws};
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -35,6 +36,8 @@ pub fn router<S: Clone + Send + Sync + 'static>(local: LocalOnly) -> Router<S> {
         .route("/peer/api/settings", any(api))
         .route("/peer/api/approve", any(api))
         .route("/peer/api/auto-approve", any(api))
+        .route("/peer/api/jobs", any(jobs_api))
+        .route("/peer/api/jobs/{*rest}", any(jobs_api))
         .route("/peer/ws/term", any(terminal))
         .with_state(local)
 }
@@ -59,6 +62,33 @@ async fn api(State(local): State<LocalOnly>, request: Request) -> Response {
     // The relaying hub fetches our state right after: let it be fresh.
     local.state.invalidate();
     response
+}
+
+/// A peer's relayed jobs request: run here, never forwarded (a `host` in
+/// the body or the query is refused).
+async fn jobs_api(State(local): State<LocalOnly>, request: Request) -> Response {
+    let gate = gate_of(&request);
+    let method = request.method().clone();
+    let patience = request.extensions().get::<Patience>().cloned();
+    if gate.query.contains_key("host") {
+        return names_a_host();
+    }
+    let body = match method {
+        Method::GET => None,
+        Method::POST => {
+            let Some(body) = read_json_object(request).await else {
+                return json_response(400, json!({"error": "bad request"}));
+            };
+            if body.contains_key("host") {
+                return names_a_host();
+            }
+            Some(body)
+        }
+        _ => return text(405, "method not allowed"),
+    };
+    let rest = gate.path.strip_prefix("/peer/api/jobs").unwrap_or("");
+    let id = local.book.id();
+    super::jobs::local(&local.jobs, &id, &method, rest, &gate.query, body, patience.as_ref()).await
 }
 
 async fn terminal(State(local): State<LocalOnly>, request: Request) -> Response {

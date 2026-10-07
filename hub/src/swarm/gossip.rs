@@ -11,8 +11,17 @@ use serde_json::{Value, json};
 use tokio::task::JoinSet;
 
 use super::client::{PeerClient, PeerError};
-use super::{Book, Heard, PeerRecord, is_secret};
+use super::{Book, Heard, PeerRecord, is_dialable, is_secret, now_ms, parse_invite_link};
+use crate::frame::PROTOCOL;
 use crate::hub::log;
+
+/// How long each step of enrolling another hub (`invite`) may take; the
+/// join itself greets every member, so it gets longer.
+const INVITE_STEP: Duration = Duration::from_secs(8);
+const INVITE_JOIN: Duration = Duration::from_secs(15);
+/// The most `invite` takes, all steps together (the route asks the
+/// server for that much patience).
+pub const INVITE_BUDGET: Duration = Duration::from_secs(8 + 8 + 15);
 
 /// How often every peer is polled.
 pub const POLL_EVERY: Duration = Duration::from_secs(2);
@@ -271,5 +280,95 @@ impl Swarm {
             .map(|(id, name, ok)| json!({"id": id, "name": name, "ok": ok}))
             .collect();
         Ok(json!({"ok": true, "id": me.id, "hello": joined, "rotated": rotated}))
+    }
+
+    /// `POST /api/swarm/invite {link}`: enrol the hub whose pairing link
+    /// this is into our swarm, driven from here — the page's way to add a
+    /// computer, since a browser paired with us can't post to another hub.
+    /// Pair with it as a browser would (`GET /auth?k=` → the cookie), read
+    /// its record (`POST /api/swarm`: name, protocol), then hand it our
+    /// swarm (`POST /api/swarm/join {secret, peers}`); it greets every
+    /// member, us included. Its record is merged here too, so we know it
+    /// even if its greeting didn't reach us. `Ok(name)`, or the status and
+    /// error for the client: 400 a bad link, 403 the link's key refused,
+    /// 409 another protocol (or no swarm at all), 502 not reached. The key
+    /// is never logged or echoed.
+    pub async fn invite(self: &Arc<Self>, link: &str) -> Result<Value, (u16, String)> {
+        let (address, key) = parse_invite_link(link).map_err(|e| (400, e.to_string()))?;
+        if !is_dialable(address) {
+            return Err((502, format!("{address} is a Tailscale address, but Tailscale is not up on this computer")));
+        }
+        let address = address.to_string();
+        let unreachable = |e: PeerError| (502, format!("cannot reach {address}: {e}"));
+        // 1. Pair with it.
+        let answer = self
+            .client
+            .visit(&address, "GET", &format!("/auth?k={key}"), None, None, INVITE_STEP)
+            .await
+            .map_err(unreachable)?;
+        if answer.status == 403 {
+            return Err((403, format!("{address} refused that pairing link (mistyped, or its link was changed)")));
+        }
+        let cookie = answer
+            .header("set-cookie")
+            .and_then(|c| c.split(';').next())
+            .and_then(|c| c.strip_prefix(&format!("{}=", crate::token::COOKIE_NAME)))
+            .filter(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_alphanumeric()))
+            .map(str::to_string);
+        let Some(cookie) = cookie.filter(|_| answer.status == 303) else {
+            return Err((502, format!("{address} did not answer like a ClaudeShip hub (HTTP {})", answer.status)));
+        };
+        // 2. Who it is.
+        let json = |body: &[u8]| serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+        let answer = self
+            .client
+            .visit(&address, "POST", "/api/swarm", Some(&cookie), Some(&json!({})), INVITE_STEP)
+            .await
+            .map_err(unreachable)?;
+        let swarm = json(&answer.body);
+        let record = PeerRecord::from_value(swarm.get("peers").and_then(|p| p.get(0)));
+        let Some(record) = record.filter(|_| answer.status == 200) else {
+            return Err((409, format!("{address} has no swarm (HTTP {}); it runs an older build — update it", answer.status)));
+        };
+        let name = if record.name.is_empty() { address.clone() } else { record.name.clone() };
+        let me = self.book.me();
+        if record.id == me.id {
+            return Err((400, "that is this computer's own link".into()));
+        }
+        if record.protocol != PROTOCOL {
+            return Err((409, format!(
+                "{name} runs protocol {} and this hub {PROTOCOL}; update and restart the older one first",
+                record.protocol
+            )));
+        }
+        // 3. It joins our swarm.
+        let secret = self.book.secret();
+        let peers: Vec<Value> = self.book.records().iter().map(PeerRecord::to_value).collect();
+        let answer = self
+            .client
+            .visit(
+                &address,
+                "POST",
+                "/api/swarm/join",
+                Some(&cookie),
+                Some(&json!({"secret": secret, "peers": peers})),
+                INVITE_JOIN,
+            )
+            .await
+            .map_err(unreachable)?;
+        let joined = json(&answer.body);
+        if answer.status != 200 || joined["ok"] != true {
+            let why = joined["error"].as_str().map_or(format!("HTTP {}", answer.status), str::to_string);
+            return Err((502, format!("{name} could not join: {why}")));
+        }
+        // Its id may be new (we had unpaired it before).
+        let mut record = record;
+        if let Some(id) = joined["id"].as_str().filter(|id| crate::web::state::is_session_id(id)) {
+            record.id = id.to_lowercase();
+        }
+        record.last_seen = now_ms();
+        self.book.answered_by(&secret, vec![record.clone()], None);
+        log(&format!("swarm: enrolled {name} ({}) from a client", record.id));
+        Ok(json!({"ok": true, "name": name, "id": record.id}))
     }
 }

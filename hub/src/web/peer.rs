@@ -37,6 +37,8 @@ pub struct LocalOnly {
     pub hub: mpsc::UnboundedSender<Command>,
     pub state: Arc<state::Cache>,
     pub book: Arc<Book>,
+    /// Jobs a peer relays (`peer_api.rs`); running one is local, too.
+    pub jobs: Arc<crate::jobs::Jobs>,
 }
 
 pub fn router<S: Clone + Send + Sync + 'static>(local: LocalOnly) -> Router<S> {

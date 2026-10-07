@@ -105,7 +105,36 @@ fn unreachable(route: &Route) -> Response {
 pub async fn forward(shared: &Arc<Shared>, route: Route, path: &str, mut body: Map<String, Value>) -> Response {
     body.remove("host");
     let body = Value::Object(body);
-    let peer_path = format!("/peer{path}");
+    relay_request(shared, route, "POST", &format!("/peer{path}"), Some(&body), PER_ADDRESS, true).await
+}
+
+/// A GET of `path` (`/api/…`, query included, `host` already left out)
+/// on the peer, answered within `budget` once connected: its answer,
+/// verbatim. A job's long-poll `wait` is the reason for the budget.
+pub async fn forward_get(shared: &Arc<Shared>, route: Route, path: &str, budget: Duration) -> Response {
+    relay_request(shared, route, "GET", &format!("/peer{path}"), None, budget, false).await
+}
+
+/// The query string for a forwarded GET: every parameter but `host`,
+/// percent-encoded, in a stable order.
+pub fn query_without_host(query: &HashMap<String, String>) -> String {
+    let mut keys: Vec<&String> = query.keys().filter(|k| *k != "host").collect();
+    keys.sort();
+    keys.iter()
+        .map(|k| format!("{}={}", encode(k), encode(&query[*k])))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+async fn relay_request(
+    shared: &Arc<Shared>,
+    route: Route,
+    method: &str,
+    peer_path: &str,
+    body: Option<&Value>,
+    budget: Duration,
+    then_refresh: bool,
+) -> Response {
     let client = &shared.swarm.client;
     for address in &route.addresses {
         // An address that can't be connected to never saw the request: the
@@ -116,8 +145,8 @@ pub async fn forward(shared: &Arc<Shared>, route: Route, path: &str, mut body: M
             continue;
         };
         let answer = tokio::time::timeout(
-            PER_ADDRESS,
-            PeerClient::exchange(stream, address, "POST", &peer_path, &route.secret, Some(&body)),
+            budget,
+            PeerClient::exchange(stream, address, method, peer_path, &route.secret, body),
         )
         .await;
         let Ok(Ok((status, value))) = answer else {
@@ -127,7 +156,9 @@ pub async fn forward(shared: &Arc<Shared>, route: Route, path: &str, mut body: M
             shared.swarm.book.missed(&route.secret, &route.id, true);
             return unreachable(&route);
         }
-        let _ = tokio::time::timeout(REFRESH, refresh(shared, &route, address)).await;
+        if then_refresh {
+            let _ = tokio::time::timeout(REFRESH, refresh(shared, &route, address)).await;
+        }
         return json_response(status, value);
     }
     unreachable(&route)

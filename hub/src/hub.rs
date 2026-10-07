@@ -1130,6 +1130,7 @@ impl Hub {
             "root": self.config.root,
             "swarmId": self.web.shared.swarm.book.id(),
             "peerRequests": self.web.shared.swarm.client.sent(),
+            "jobs": self.web.shared.jobs.enabled,
             "sessions": sessions,
         })
     }
@@ -1263,6 +1264,7 @@ impl Hub {
             // SAFETY: unreaped supervisors; see `terminate`.
             unsafe { libc::kill(-s.pid, libc::SIGHUP) };
         }
+        self.web.shared.jobs.kill_all();
         let _ = std::fs::remove_file(paths::socket());
         let _ = std::fs::remove_file(paths::approvals_socket());
         std::process::exit(0);
@@ -1383,7 +1385,7 @@ pub fn web_environment(
 
 /// Not secret (session ids are names, not credentials): /dev/urandom, or
 /// the clock if that fails.
-fn random_u32() -> u32 {
+pub fn random_u32() -> u32 {
     use std::io::Read;
     let mut bytes = [0u8; 4];
     if std::fs::File::open("/dev/urandom")

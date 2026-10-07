@@ -11,7 +11,9 @@ mod config;
 mod frame;
 mod hook;
 mod hub;
+mod jobs;
 mod local;
+mod mcp;
 mod net;
 mod paths;
 mod procs;
@@ -30,6 +32,11 @@ fn main() {
         // Claude Code's PermissionRequest hook: never a decision it wasn't
         // given (see hook.rs).
         hook::run_helper();
+    }
+    if args.len() == 1 && args[0] == "mcp" {
+        // The MCP server for Claude Code (mcp.rs). Only the bare word:
+        // `claudeship mcp add …` is still claude's own `mcp` command.
+        mcp::run();
     }
     cli::run(args);
 }
