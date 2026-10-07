@@ -61,11 +61,44 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
 - The directory is one run of sections per hub (`HubSections`), headed by
   a `HubTitle` row only when two or more are paired — with one, it looks as
   it always did. Offline (`OfflineNote`), refused, and the protocol banner
-  are per hub. Session screens are `SessionRoute { hub, id }`; RootView
+  are per hub. Session screens are `SessionRoute { hub, host, id }`; RootView
   puts that hub's store in the environment. The top bar's quick "+" asks
-  which hub (confirmation dialog) when two or more are paired. `-session`
-  and `claudeship://session?id=` open the hub that has that session (else
-  the first).
+  which machine (confirmation dialog) when two or more are in view.
+- **Swarm (phase 10).** A hub's `/api/state` may carry `hosts: [HubHost]`
+  (every machine of its swarm, local first; each field optional, absent
+  on an older hub, which then reads as one host: the top-level fields,
+  `HubState.localHost`). The directory renders per paired hub, then per
+  host (`HostSections`): a `HostTitle` header (the hub's own machine
+  marked "hub") only when the hub shows more than its own machine;
+  an unreachable host keeps its last projects, disabled, under
+  "Unreachable since <lastSeen>"; a protocol banner per host (vs this
+  app, and vs the home hub, which won't relay across builds).
+  **Dedupe** (`HubRegistry.hostOwners`): every paired member reports the
+  whole swarm, so each host id appears once — under the paired hub where
+  it is `local`, else the first (pairing order) reporting it `reachable`,
+  else the first listing it. Only hubs answering count, so when the
+  phone can't reach one hub its machine shows under another; its
+  "Can't connect" note stays. Clocks are per host (`HubStore.hostNow`,
+  keyed by host; learnt only while reachable). Rows read the host from
+  the `hostScope` environment; launch/resume/kill/approve/auto-approve
+  and the quick "+" (a picker over every reachable host when more than
+  one) send `host` **only for a peer** (`HubHost.target` is nil for the
+  answering hub's own machine, so an older hub never sees the field);
+  `SessionRoute` and `/ws/term?host=` carry it too. `-session` and
+  `claudeship://session?id=` search every host of every hub
+  (`HubRegistry.route(for:)`). A 409 (`protocol mismatch`) or 502
+  (`unreachable`) from a relayed action becomes `HubError.proxy` → a
+  root-level alert naming the machine (`HubStore.alert`); a 409 on the
+  WebSocket upgrade stops retrying with the same words.
+- **Swarm enrolment** (`SwarmView`, `HubRegistry.addToSwarm`): after a
+  *new* hub is paired from the sheet and another paired, swarm-capable
+  hub isn't already in a swarm with it, the sheet's second step offers
+  "Add <new> to the swarm with <existing>" (a picker with several; "Not
+  now" leaves it standalone); also Settings → a hub → "Add to swarm
+  with…". It POSTs `/api/swarm` `{}` to the member, then
+  `/api/swarm/join {secret, peers}` to the joining hub, peers passed
+  through untouched. The secret lives only in that call — never logged,
+  shown, or stored. Errors name the hub that failed and stay in the sheet.
 - `App/HubAPI.swift` mirrors `/api/state`, `/api/launch`, `/api/kill`,
   `/api/settings`, `/api/approve`, `/api/auto-approve` (models decode the
   JSON the hub's `hub/src/web/state.rs` produces; keep
@@ -134,6 +167,7 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
   custom-URL "Open?" prompt from outside): `-pair <link>` (repeat it for
   several hubs; a tiny Python server answering `/api/state` on two ports
   is enough to lay out the multi-hub directory), `-session <hub
-  id>`, `-expand <project name>`; `SIMCTL_CHILD_CH_OFF=glyph,launch,header,tally` turns directory
+  id>`, `-expand <project name>`, `-swarm` (open the add-to-swarm step for
+  the last hub paired) / `-swarm-confirm` (…and press Add); `SIMCTL_CHILD_CH_OFF=glyph,launch,header,tally` turns directory
   pieces off for bisecting layout trouble. Screenshots:
   `xcrun simctl io booted screenshot x.png`.

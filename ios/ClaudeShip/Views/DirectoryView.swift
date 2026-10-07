@@ -14,11 +14,11 @@ struct DirectoryView: View {
     @Environment(\.navigate) private var navigate
     @State private var filter = ""
     @State private var settings = false
-    /// Expanded projects, as `HubSections.key` (hub id + path: two hubs
-    /// can both have ~/code/x).
+    /// Expanded projects, as `HostSections.key` (hub id + host + path: two
+    /// machines can both have ~/code/x).
     @State private var expanded: Set<String> = []
-    /// The quick "+" is asking which hub.
-    @State private var choosingHub = false
+    /// The quick "+" is asking which machine.
+    @State private var choosingHost = false
     /// A hub that refused this phone, being paired again.
     @State private var repairing: HubStore?
     /// `-expand <name>` at launch (simulator scripting).
@@ -34,13 +34,15 @@ struct DirectoryView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .onChange(of: registry.stores.map { $0.state?.projects.count ?? -1 }, initial: true) { _, _ in
+        .onChange(of: registry.stores.map { $0.state?.allHosts.map(\.projectList.count) ?? [] }, initial: true) { _, _ in
             guard let name = Self.initialExpanded else { return }
             for store in registry.stores {
-                if let project = store.state?.projects.first(where: { $0.name == name }) {
-                    expanded.insert(HubSections.key(store, project.path))
-                    Self.initialExpanded = nil
-                    return
+                for host in registry.hosts(of: store) {
+                    if let project = host.projectList.first(where: { $0.name == name }) {
+                        expanded.insert(HostSections.key(store, host.target, project.path))
+                        Self.initialExpanded = nil
+                        return
+                    }
                 }
             }
         }
@@ -63,10 +65,10 @@ struct DirectoryView: View {
                 // The quick "+": a session in the Mac's home directory, in
                 // auto mode — the New session button without the words or
                 // the mode menu, for work that isn't about any one project.
-                // With two hubs or more it asks which.
+                // With two machines or more in view it asks which.
                 if !quickTargets.isEmpty {
                     Button {
-                        if registry.stores.count > 1 { choosingHub = true } else if let store = quickTargets.first { quick(store) }
+                        if quickTargets.count > 1 { choosingHost = true } else if let target = quickTargets.first { quick(target) }
                     } label: {
                         Image(systemName: "plus")
                             .font(.subheadline.weight(.semibold))
@@ -75,7 +77,7 @@ struct DirectoryView: View {
                             .foregroundStyle(.white)
                     }
                     .buttonStyle(.plain)
-                    .disabled(quickTargets.contains { $0.launching })
+                    .disabled(quickTargets.contains { $0.store.launching })
                     .accessibilityLabel("New session in your home folder")
                 }
             }
@@ -83,27 +85,40 @@ struct DirectoryView: View {
                 Button { settings = true } label: { Image(systemName: "gearshape") }
             }
         }
-        .confirmationDialog("New session in the home folder on", isPresented: $choosingHub, titleVisibility: .visible) {
-            ForEach(quickTargets) { store in
-                Button(store.hostName) { quick(store) }
+        .confirmationDialog("New session in the home folder on", isPresented: $choosingHost, titleVisibility: .visible) {
+            ForEach(quickTargets) { target in
+                Button(target.host.target == nil ? target.store.hostName : target.host.displayName) { quick(target) }
             }
         }
         .sheet(isPresented: $settings) { SettingsView() }
         .sheet(item: $repairing) { store in PairView(asSheet: true, refused: store) }
     }
 
-    /// Hubs the quick "+" can start a session on right now.
-    private var quickTargets: [HubStore] {
-        registry.stores.filter { $0.state?.home != nil && !$0.offline && !$0.unpaired }
+    /// A machine the quick "+" can start a session on, through a hub.
+    private struct QuickTarget: Identifiable {
+        let store: HubStore
+        let host: HubHost
+        var id: String { "\(store.key.uuidString)/\(host.id)" }
     }
 
-    private func quick(_ store: HubStore) {
-        guard let home = store.state?.home else { return }
-        Task { if let id = await store.launch(path: home, mode: "auto") { navigate(store.route(id)) } }
+    /// Machines the quick "+" can start a session on right now: every
+    /// reachable host in view (each once, after the swarm dedupe).
+    private var quickTargets: [QuickTarget] {
+        registry.stores.filter { !$0.offline && !$0.unpaired }.flatMap { store in
+            registry.hosts(of: store).filter { $0.isReachable && $0.home != nil }.map { QuickTarget(store: store, host: $0) }
+        }
+    }
+
+    private func quick(_ target: QuickTarget) {
+        guard let home = target.host.home else { return }
+        let store = target.store, host = target.host.target
+        Task { if let id = await store.launch(path: home, mode: "auto", host: host) { navigate(store.route(id, host: host)) } }
     }
 
     private var tally: some View {
-        let all = registry.stores.flatMap { $0.offline || $0.unpaired ? [] : $0.state?.allSessions ?? [] }
+        let all = registry.stores.flatMap { store in
+            store.offline || store.unpaired ? [] : registry.hosts(of: store).filter(\.isReachable).flatMap(\.allSessions)
+        }
         let waiting = all.filter { $0.status == "waiting" }.count
         let busy = all.filter { $0.status == "busy" }.count
         return HStack(spacing: 8) {
@@ -119,10 +134,12 @@ struct DirectoryView: View {
     }
 }
 
-/// One hub's part of the directory: what's running first, then every
-/// project folder on that Mac, in the hub's order. Offline, refused, and
-/// version trouble are this hub's alone.
+/// One hub's part of the directory: a run of sections per machine it
+/// shows (one, unheaded, for a hub alone; one per swarm host it owns after
+/// the dedupe, headed, otherwise). Offline, refused, and notices are the
+/// hub's; reachability and version trouble are each host's.
 private struct HubSections: View {
+    @Environment(HubRegistry.self) private var registry
     @Environment(HubStore.self) private var store
     let filter: String
     @Binding var expanded: Set<String>
@@ -130,8 +147,6 @@ private struct HubSections: View {
     let titled: Bool
     /// Pair this (refused) hub again.
     let repair: () -> Void
-
-    static func key(_ store: HubStore, _ path: String) -> String { "\(store.key.uuidString)/\(path)" }
 
     var body: some View {
         if titled {
@@ -166,16 +181,70 @@ private struct HubSections: View {
             Section { Text(error).foregroundStyle(.secondary) }
         }
         if let state = store.state, !store.offline, !store.unpaired {
-            if state.protocol != HubState.protocolVersion {
-                Section {
-                    Text("The hub on the Mac is a different build than this app. Restart it when its sessions can end: claudeship hub stop, then claudeship hub start.")
-                        .font(.footnote).foregroundStyle(Palette.orange)
-                }
+            let hosts = registry.hosts(of: store)
+            // Headed when it's more than this hub's own machine.
+            let headed = hosts.count > 1 || hosts.contains { $0.target != nil }
+            ForEach(hosts) { host in
+                HostSections(host: host, homeProtocol: state.protocol, filter: filter, expanded: $expanded, headed: headed)
+                    .environment(\.hostScope, HostScope(target: host.target, defaultMode: host.defaultPermissionMode))
             }
-            let visible = state.projects.filter(matches)
+        } else if store.error == nil && !store.unpaired {
+            Section { ProgressView().frame(maxWidth: .infinity) }
+        }
+    }
+}
+
+/// One machine's part of the directory: what's running first, then every
+/// project folder on it, in the hub's order.
+private struct HostSections: View {
+    @Environment(HubStore.self) private var store
+    let host: HubHost
+    /// The answering hub's protocol: it relays only to a peer on the same.
+    let homeProtocol: Int?
+    let filter: String
+    @Binding var expanded: Set<String>
+    /// Several machines in view: head the run with this one's name.
+    let headed: Bool
+
+    static func key(_ store: HubStore, _ host: String?, _ path: String) -> String {
+        "\(store.key.uuidString)/\(host ?? "")/\(path)"
+    }
+
+    var body: some View {
+        if headed {
+            Section {
+                HostTitle(host: host)
+            }
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 0, trailing: 4))
+        }
+        if !host.isReachable {
+            Section {
+                Label {
+                    Text(host.lastSeen.map { "Unreachable since \(Ago.since(ms: $0, now: store.now))" } ?? "Unreachable")
+                        .font(.footnote)
+                } icon: {
+                    Image(systemName: "moon.zzz")
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        if host.protocol != HubState.protocolVersion {
+            Section {
+                Text("The hub on \(headed ? host.displayName : "the Mac") is a different build than this app. Restart it when its sessions can end: claudeship hub stop, then claudeship hub start.")
+                    .font(.footnote).foregroundStyle(Palette.orange)
+            }
+        } else if host.target != nil, let homeProtocol, homeProtocol != host.protocol {
+            Section {
+                Text("\(host.displayName) runs a different build than \(store.hostName), which can't relay to it until both run the same one.")
+                    .font(.footnote).foregroundStyle(Palette.orange)
+            }
+        }
+        Group {
+            let visible = host.projectList.filter(matches)
             let running = visible.filter { !$0.sessions.isEmpty }
             let rest = visible.filter { $0.sessions.isEmpty }
-            if running.isEmpty && filter.isEmpty {
+            if running.isEmpty && filter.isEmpty && host.isReachable {
                 Section("Running") {
                     Text("Nothing is running. Start a session below, or run claudeship in a terminal on the Mac.")
                         .foregroundStyle(.secondary)
@@ -197,9 +266,9 @@ private struct HubSections: View {
             }
             // Sessions running outside the projects folder: shown while
             // they run, never tracked otherwise.
-            if !state.elsewhere.isEmpty && filter.isEmpty {
+            if !host.elsewhereList.isEmpty && filter.isEmpty {
                 Section("Running elsewhere") {
-                    ForEach(state.elsewhere) { session in SessionRow(session: session, project: nil) }
+                    ForEach(host.elsewhereList) { session in SessionRow(session: session, project: nil) }
                 }
             }
             if !rest.isEmpty {
@@ -215,13 +284,14 @@ private struct HubSections: View {
                     HStack {
                         Text("Projects")
                         Spacer()
-                        Text(state.rootDisplay).font(.caption.monospaced()).textCase(nil)
+                        Text(host.rootDisplay ?? "").font(.caption.monospaced()).textCase(nil)
                     }
                 }
             }
-        } else if store.error == nil && !store.unpaired {
-            Section { ProgressView().frame(maxWidth: .infinity) }
         }
+        // An unreachable machine's last state, for reference: nothing on it
+        // can be started, opened, or answered until it is back.
+        .disabled(!host.isReachable)
     }
 
     private func matches(_ project: HubProject) -> Bool {
@@ -232,10 +302,10 @@ private struct HubSections: View {
         return haystack.contains(needle)
     }
 
-    private func isExpanded(_ project: HubProject) -> Bool { expanded.contains(Self.key(store, project.path)) }
+    private func isExpanded(_ project: HubProject) -> Bool { expanded.contains(Self.key(store, host.target, project.path)) }
 
     private func toggle(_ project: HubProject) {
-        let key = Self.key(store, project.path)
+        let key = Self.key(store, host.target, project.path)
         if expanded.contains(key) { expanded.remove(key) } else { expanded.insert(key) }
     }
 
@@ -253,6 +323,49 @@ private struct HubSections: View {
                 ResumeRow(project: project, conversation: conversation)
             }
         }
+    }
+}
+
+/// A swarm machine's name over its run of sections; the one the hub runs
+/// on is marked.
+private struct HostTitle: View {
+    let host: HubHost
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: host.isReachable ? "server.rack" : "moon.zzz").font(.footnote).foregroundStyle(.secondary)
+            Text(host.displayName).font(.headline).lineLimit(1)
+            if host.isLocal {
+                Text("hub").font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Color.accentColor.opacity(0.18), in: Capsule())
+                    .accessibilityLabel("the hub's own machine")
+            }
+            Spacer()
+            if !host.isReachable {
+                Text("Unreachable").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// Which machine a row belongs to: what its actions name as `host`, and
+/// that machine's default permission mode.
+struct HostScope {
+    /// A swarm peer's id; nil for the answering hub's own machine.
+    var target: String?
+    var defaultMode: String?
+}
+
+private struct HostScopeKey: EnvironmentKey {
+    static let defaultValue = HostScope()
+}
+
+extension EnvironmentValues {
+    var hostScope: HostScope {
+        get { self[HostScopeKey.self] }
+        set { self[HostScopeKey.self] = newValue }
     }
 }
 
@@ -300,6 +413,7 @@ private struct ProjectHeader: View {
 struct SessionRow: View {
     @Environment(HubStore.self) private var store
     @Environment(\.navigate) private var navigate
+    @Environment(\.hostScope) private var scope
     let session: HubSession
     let project: HubProject?
     @State private var confirmEnd = false
@@ -314,7 +428,7 @@ struct SessionRow: View {
                 }
                 .confirmationDialog("End this session?", isPresented: $confirmEnd, titleVisibility: .visible) {
                     Button("End session", role: .destructive) {
-                        Task { _ = await store.end(hubId: hubId) }
+                        Task { _ = await store.end(hubId: hubId, host: scope.target) }
                     }
                 } message: {
                     Text("Claude exits; the conversation can be resumed later.")
@@ -329,15 +443,15 @@ struct SessionRow: View {
         if let approval = session.pendingApprovals.first {
             // Not a NavigationLink: its own buttons must take their taps.
             approvalContent(approval, hubId: hubId)
-                .sheet(item: $detail) { approval in ApprovalDetail(approval: approval, session: session).environment(store) }
+                .sheet(item: $detail) { approval in ApprovalDetail(approval: approval, session: session).environment(store).environment(\.hostScope, scope) }
         } else if let hubId {
-            NavigationLink(value: store.route(hubId)) { content }
+            NavigationLink(value: store.route(hubId, host: scope.target)) { content }
         } else {
             content
         }
     }
 
-    private var autoApproving: Bool { session.autoApprove?.isActive(now: store.now) == true }
+    private var autoApproving: Bool { session.autoApprove?.isActive(now: store.now(for: scope.target)) == true }
 
     private var glyph: some View {
         Group {
@@ -389,22 +503,22 @@ struct SessionRow: View {
             glyph
             VStack(alignment: .leading, spacing: 6) {
                 if let hubId {
-                    Button { navigate(store.route(hubId)) } label: { title }
+                    Button { navigate(store.route(hubId, host: scope.target)) } label: { title }
                         .buttonStyle(.plain)
                 } else {
                     title
                 }
                 HStack(spacing: 8) {
-                    Button("Approve") { Task { await store.answer(approval, allow: true) } }
+                    Button("Approve") { Task { await store.answer(approval, allow: true, host: scope.target) } }
                         .buttonStyle(.borderedProminent).tint(Palette.green)
-                    Button("Deny") { Task { await store.answer(approval, allow: false) } }
+                    Button("Deny") { Task { await store.answer(approval, allow: false, host: scope.target) } }
                         .buttonStyle(.bordered)
                     if session.sessionId != nil {
                         Menu {
-                            Button("Approve all for 5 minutes") { Task { await store.autoApprove(session, rule: "5m") } }
-                            Button("Approve all for this session") { Task { await store.autoApprove(session, rule: "session") } }
+                            Button("Approve all for 5 minutes") { Task { await store.autoApprove(session, rule: "5m", host: scope.target) } }
+                            Button("Approve all for this session") { Task { await store.autoApprove(session, rule: "session", host: scope.target) } }
                             if autoApproving {
-                                Button("Stop approving", role: .destructive) { Task { await store.autoApprove(session, rule: "off") } }
+                                Button("Stop approving", role: .destructive) { Task { await store.autoApprove(session, rule: "off", host: scope.target) } }
                             }
                         } label: {
                             Image(systemName: "ellipsis")
@@ -435,7 +549,7 @@ struct SessionRow: View {
     private var meta: String {
         var parts = [StatusText.label(session.status)]
         if session.status == "waiting", let what = session.waitingFor { parts[0] += " — \(what)" }
-        if let since = session.since { parts.append(Ago.age(ms: since, now: store.now)) }
+        if let since = session.since { parts.append(Ago.age(ms: since, now: store.now(for: scope.target))) }
         if project == nil { parts.append(session.cwd) } else if let sub = session.sub { parts.append(sub) }
         if let branch = session.branch, branch != project?.branch { parts.append(branch) }
         if session.viewers > 0 { parts.append("\(session.viewers) attached") }
@@ -446,6 +560,7 @@ struct SessionRow: View {
 /// A permission prompt in full: what the tool wants to do, and the answer.
 private struct ApprovalDetail: View {
     @Environment(HubStore.self) private var store
+    @Environment(\.hostScope) private var scope
     @Environment(\.dismiss) private var dismiss
     let approval: HubApproval
     let session: HubSession
@@ -489,13 +604,13 @@ private struct ApprovalDetail: View {
 
     private func answer(_ allow: Bool) {
         dismiss()
-        Task { await store.answer(approval, allow: allow) }
+        Task { await store.answer(approval, allow: allow, host: scope.target) }
     }
 }
 
 extension HubStore {
-    /// Where a session of this hub opens.
-    func route(_ hubId: String) -> SessionRoute { SessionRoute(hub: key, id: hubId) }
+    /// Where a session of this hub (on that swarm host; nil: its own) opens.
+    func route(_ hubId: String, host: String? = nil) -> SessionRoute { SessionRoute(hub: key, host: host, id: hubId) }
 }
 
 /// The Mac isn't answering. Plain words, no alarm: a sleeping or
@@ -519,6 +634,7 @@ private struct OfflineNote: View {
 /// show only when expanded, as the resume list.
 private struct ProjectRow: View {
     @Environment(HubStore.self) private var store
+    @Environment(\.hostScope) private var scope
     let project: HubProject
     let expanded: Bool
     let toggle: () -> Void
@@ -534,7 +650,7 @@ private struct ProjectRow: View {
                 }
                 Spacer()
                 if let at = project.lastActivity {
-                    Text(Ago.ago(ms: at, now: store.now)).font(.caption).foregroundStyle(.tertiary)
+                    Text(Ago.ago(ms: at, now: store.now(for: scope.target))).font(.caption).foregroundStyle(.tertiary)
                 }
                 Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
             }
@@ -564,12 +680,13 @@ private struct EarlierRow: View {
 private struct LaunchRow: View {
     @Environment(HubStore.self) private var store
     @Environment(\.navigate) private var navigate
+    @Environment(\.hostScope) private var scope
     let project: HubProject
 
     var body: some View {
         HStack(spacing: 8) {
             Button {
-                Task { if let id = await store.launch(path: project.path) { navigate(store.route(id)) } }
+                Task { if let id = await store.launch(path: project.path, host: scope.target) { navigate(store.route(id, host: scope.target)) } }
             } label: {
                 Label("New session", systemImage: "plus")
                     .font(.subheadline.weight(.semibold))
@@ -583,9 +700,9 @@ private struct LaunchRow: View {
                 Section("Start in") {
                     ForEach(PermissionMode.known.filter { store.state?.permissionModes.contains($0.mode) ?? true }, id: \.mode) { entry in
                         Button {
-                            Task { if let id = await store.launch(path: project.path, mode: entry.mode) { navigate(store.route(id)) } }
+                            Task { if let id = await store.launch(path: project.path, mode: entry.mode, host: scope.target) { navigate(store.route(id, host: scope.target)) } }
                         } label: {
-                            if entry.mode == store.state?.defaultPermissionMode {
+                            if entry.mode == defaultMode {
                                 Label(entry.name, systemImage: "checkmark")
                             } else {
                                 Text(entry.name)
@@ -600,28 +717,32 @@ private struct LaunchRow: View {
                     .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             Spacer()
-            if let mode = store.state?.defaultPermissionMode {
+            if let mode = defaultMode {
                 Text(PermissionMode.name(mode)).font(.caption).foregroundStyle(.tertiary)
             }
         }
         .padding(.vertical, 2)
     }
+
+    /// The machine's own default (each swarm host keeps one).
+    private var defaultMode: String? { scope.defaultMode ?? store.state?.defaultPermissionMode }
 }
 
 private struct ResumeRow: View {
     @Environment(HubStore.self) private var store
     @Environment(\.navigate) private var navigate
+    @Environment(\.hostScope) private var scope
     let project: HubProject
     let conversation: HubConversation
 
     var body: some View {
         Button {
-            Task { if let id = await store.launch(path: project.path, resume: conversation.sessionId) { navigate(store.route(id)) } }
+            Task { if let id = await store.launch(path: project.path, resume: conversation.sessionId, host: scope.target) { navigate(store.route(id, host: scope.target)) } }
         } label: {
             HStack {
                 Text(conversation.title).font(.subheadline).foregroundStyle(.primary).lineLimit(1)
                 Spacer()
-                Text(Ago.ago(ms: conversation.at, now: store.now)).font(.caption).foregroundStyle(.tertiary)
+                Text(Ago.ago(ms: conversation.at, now: store.now(for: scope.target))).font(.caption).foregroundStyle(.tertiary)
                 Text("Resume").font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
             }
         }

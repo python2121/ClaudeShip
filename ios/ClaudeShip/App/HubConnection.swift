@@ -73,11 +73,12 @@ final class HubConnection {
 
     /// The terminal WebSocket for a session. `claim` says whether opening
     /// it should size the session for this screen.
-    func terminalRequest(hubId: String, cols: Int, rows: Int, claim: Bool) -> URLRequest? {
+    /// `host`: the swarm peer the session runs on (nil: this hub's machine).
+    func terminalRequest(hubId: String, host: String?, cols: Int, rows: Int, claim: Bool) -> URLRequest? {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else { return nil }
         components.scheme = baseURL.scheme == "https" ? "wss" : "ws"
         components.path = "/ws/term"
-        components.queryItems = [
+        components.queryItems = (host.map { [URLQueryItem(name: "host", value: $0)] } ?? []) + [
             URLQueryItem(name: "id", value: hubId),
             URLQueryItem(name: "rows", value: String(rows)),
             URLQueryItem(name: "cols", value: String(cols)),

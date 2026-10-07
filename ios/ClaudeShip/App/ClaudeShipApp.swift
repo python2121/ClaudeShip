@@ -12,6 +12,8 @@ struct ClaudeShipApp: App {
         //   -pair <pairing link>   pair (add the hub) before the first screen; repeatable
         //   -session <hub id>      open straight onto that session
         //   -expand <project name> start with that project's row expanded
+        //   -swarm                 offer "add to swarm" for the last hub paired
+        //   -swarm-confirm         …and press Add
         let arguments = CommandLine.arguments
         if let i = arguments.firstIndex(of: "-expand"), i + 1 < arguments.count {
             DirectoryView.initialExpanded = arguments[i + 1]
@@ -21,6 +23,9 @@ struct ClaudeShipApp: App {
         }
         if let i = arguments.firstIndex(of: "-session"), i + 1 < arguments.count {
             RootView.initialSession = arguments[i + 1]
+        }
+        if arguments.contains("-swarm") || arguments.contains("-swarm-confirm") {
+            RootView.initialSwarm = arguments.contains("-swarm-confirm") ? .confirm : .offer
         }
         _registry = State(initialValue: registry)
     }

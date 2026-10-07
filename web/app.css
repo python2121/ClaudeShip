@@ -671,3 +671,17 @@ body.has-dock .page { padding-bottom: 72px; }
   .menu { animation: none; }
   .glyph.waiting, .glyph.starting { animation: none; }
 }
+
+/* ── Swarm: one section per host ── */
+section.host + section.host { margin-top: 56px; padding-top: 28px; border-top: 1px solid var(--line-strong); }
+.host-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; margin: 0 2px 18px; }
+.host-head h2 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -0.01em; color: var(--text); overflow-wrap: anywhere; }
+.host-head .tag {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--dim); background: var(--surface-2); padding: 2px 7px; border-radius: 5px;
+}
+.host-head .host-state { color: var(--orange); font-size: 13px; font-weight: 550; }
+.host-foot { margin: 22px 2px 0; color: var(--faint); font-size: 12.5px; line-height: 1.5; }
+.host-foot code { font: 12px var(--mono); color: var(--dim); }
+section.host.down > :not(.host-head):not(.banner) { opacity: 0.45; }
+section.host.down .btn, section.host.down .session, section.host.down .recent-item { cursor: not-allowed; }

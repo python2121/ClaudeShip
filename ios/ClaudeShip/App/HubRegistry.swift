@@ -14,9 +14,12 @@ struct Hub: Codable, Identifiable, Equatable {
     private enum CodingKeys: String, CodingKey { case id, name, baseURL }
 }
 
-/// Where a session screen points: which hub, and the session's hub id there.
+/// Where a session screen points: which paired hub carries it, which
+/// machine of that hub's swarm it runs on (nil: the hub's own), and the
+/// session's hub id there.
 struct SessionRoute: Hashable {
     var hub: UUID
+    var host: String? = nil
     var id: String
 }
 
@@ -82,6 +85,83 @@ final class HubRegistry {
         hubs.remove(at: i)
         stores.remove(at: i)
         save()
+    }
+
+    // MARK: Swarm
+
+    /// Which paired hub shows each swarm host. With a swarm every paired
+    /// member reports every machine; each appears once: under the hub
+    /// where it is local, else the first (in pairing order) that reaches
+    /// it, else the first that lists it. Only hubs answering right now
+    /// count — an offline one has its own note, and its machine shows
+    /// under whichever other hub still reaches it.
+    var hostOwners: [String: UUID] {
+        var owners: [String: (store: UUID, rank: Int)] = [:]
+        for store in stores where !store.offline && !store.unpaired {
+            for host in store.state?.hosts ?? [] where !host.id.isEmpty {
+                let rank = host.isLocal ? 0 : host.isReachable ? 1 : 2
+                if let current = owners[host.id], current.rank <= rank { continue }
+                owners[host.id] = (store.key, rank)
+            }
+        }
+        return owners.mapValues(\.store)
+    }
+
+    /// The hosts this hub's part of the directory shows, after the dedupe.
+    /// An older hub (no `hosts`) is one host, itself, always shown.
+    func hosts(of store: HubStore) -> [HubHost] {
+        guard let state = store.state else { return [] }
+        guard state.hosts?.isEmpty == false else { return [state.localHost] }
+        let owners = hostOwners
+        return state.allHosts.filter { owners[$0.id] == nil || owners[$0.id] == store.key }
+    }
+
+    /// The hub and host that have a session with this hub id (searching
+    /// every host of every hub, the deduped placement first).
+    func route(for hubId: String) -> SessionRoute? {
+        for store in stores {
+            for host in hosts(of: store) where host.session(hubId: hubId) != nil {
+                return SessionRoute(hub: store.key, host: host.target, id: hubId)
+            }
+        }
+        for store in stores {
+            for host in store.state?.allHosts ?? [] where host.session(hubId: hubId) != nil {
+                return SessionRoute(hub: store.key, host: host.target, id: hubId)
+            }
+        }
+        return nil
+    }
+
+    /// Hubs `joining` can be added to the swarm with: paired, swarm-capable,
+    /// and not already in one with it.
+    func swarmCandidates(for joining: HubStore) -> [HubStore] {
+        guard joining.state?.swarmCapable == true else { return [] }
+        let own = joining.state?.localHostId
+        return stores.filter { store in
+            guard store.key != joining.key, !store.unpaired, let state = store.state, state.swarmCapable else { return false }
+            guard let own else { return true }
+            return !(state.hosts ?? []).contains { $0.id == own }
+        }
+    }
+
+    /// Enrols `joining` in `member`'s swarm: the member's secret and peer
+    /// list (`POST /api/swarm`) handed to the joining hub
+    /// (`POST /api/swarm/join`). The secret lives only in this call.
+    func addToSwarm(_ joining: HubStore, with member: HubStore) async throws {
+        let invite: (secret: String, peers: Any)
+        do {
+            invite = try await member.connection.swarmInvite()
+        } catch {
+            throw HubError.refused("\(member.hostName): \(error.localizedDescription)")
+        }
+        do {
+            try await joining.connection.swarmJoin(secret: invite.secret, peers: invite.peers)
+        } catch {
+            throw HubError.refused("\(joining.hostName): \(error.localizedDescription)")
+        }
+        async let a: Void = joining.refresh()
+        async let b: Void = member.refresh()
+        _ = await (a, b)
     }
 
     func setActive(_ active: Bool) {

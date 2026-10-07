@@ -8,6 +8,9 @@
 //! as a `Command`, like a terminal client's frames do.
 
 pub mod assets;
+pub mod peer;
+pub mod peer_api;
+pub mod proxy;
 pub mod router;
 pub mod security;
 pub mod server;
@@ -37,6 +40,8 @@ pub struct Shared {
     /// Open connections (a WebSocket counts until it closes).
     pub connections: AtomicUsize,
     pub state: Arc<state::Cache>,
+    /// The swarm: its book (which `/peer/*` gets alone) and the peer client.
+    pub swarm: Arc<crate::swarm::Swarm>,
 }
 
 impl Shared {
@@ -51,6 +56,7 @@ impl Shared {
             epoch: watch::channel(0).0,
             connections: AtomicUsize::new(0),
             state: Arc::default(),
+            swarm: crate::swarm::Swarm::new(config.port),
         })
     }
 

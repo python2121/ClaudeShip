@@ -86,19 +86,20 @@
 
   // The hub's clock, not this device's: ages are differences against
   // timestamps the Mac wrote, and a phone's clock can be off.
-  let clockOffset = 0;
-  const now = () => Date.now() + clockOffset;
+  // Each host in the swarm has its own clock: a view carries the offset of
+  // the host whose timestamps are being read.
+  const now = (view) => Date.now() + (view ? view.offset : 0);
 
-  function age(ms) {
-    const s = Math.max(0, Math.floor((now() - ms) / 1000));
+  function age(ms, view) {
+    const s = Math.max(0, Math.floor((now(view) - ms) / 1000));
     if (s < 60) return `${s}s`;
     if (s < 3600) return `${Math.floor(s / 60)}m`;
     if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
     return `${Math.floor(s / 86400)}d`;
   }
 
-  function ago(ms) {
-    const s = Math.max(0, Math.floor((now() - ms) / 1000));
+  function ago(ms, view) {
+    const s = Math.max(0, Math.floor((now(view) - ms) / 1000));
     if (s < 60) return 'just now';
     if (s < 3600) return `${Math.floor(s / 60)}m ago`;
     if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
@@ -107,7 +108,7 @@
   }
 
   const tilde = (path, data) =>
-    data && path.startsWith(data.root) ? data.rootDisplay + path.slice(data.root.length) : path;
+    data && data.root && path.startsWith(data.root) ? data.rootDisplay + path.slice(data.root.length) : path;
 
   // ── State ────────────────────────────────────────────────
 
@@ -123,7 +124,66 @@
     launching: false,
     answering: new Set(),  // approval ids / session ids with a request in flight
     signature: '',
+    views: [],         // one per host in the swarm (a single one on an older hub)
   };
+
+  /** One host's slice of /api/state, shaped like the top-level fields the
+      rendering code reads, plus the host's identity and clock. hostId is
+      null for the hub serving this page (requests omit it). */
+  function buildViews(data) {
+    const local = {
+      hostId: null, name: data.host, local: true, reachable: true, down: false, lastSeen: null,
+      protocol: data.protocol, offset: data.now - Date.now(),
+      root: data.root, rootDisplay: data.rootDisplay, home: data.home,
+      defaultPermissionMode: data.defaultPermissionMode, permissionModes: data.permissionModes,
+      approvalsSupported: Boolean(data.approvalsSupported),
+      projects: data.projects, elsewhere: data.elsewhere,
+    };
+    if (!Array.isArray(data.hosts) || !data.hosts.length) return [local];
+    const views = data.hosts.map((entry) => {
+      if (entry.local) return { ...local, name: entry.name || data.host };
+      const reachable = entry.reachable !== false;
+      return {
+        hostId: String(entry.id), name: entry.name || String(entry.id), local: false,
+        reachable, down: !reachable, lastSeen: Number.isFinite(entry.lastSeen) ? entry.lastSeen : null,
+        protocol: entry.protocol,
+        offset: (Number.isFinite(entry.now) ? entry.now : data.now) - Date.now(),
+        root: entry.root, rootDisplay: entry.rootDisplay || entry.root, home: entry.home,
+        defaultPermissionMode: entry.defaultPermissionMode, permissionModes: data.permissionModes,
+        approvalsSupported: Boolean(entry.approvalsSupported),
+        projects: Array.isArray(entry.projects) ? entry.projects : [],
+        elsewhere: Array.isArray(entry.elsewhere) ? entry.elsewhere : [],
+      };
+    });
+    if (!views.some((v) => v.local)) views.unshift(local);
+    return views;
+  }
+
+  const localView = () => ui.views.find((v) => v.local) || null;
+  const viewFor = (hostId) => ui.views.find((v) => v.hostId === (hostId || null)) || null;
+  const withHost = (view, body) => (view && view.hostId ? { ...body, host: view.hostId } : body);
+  // Per-host keys: project paths and session keys repeat across machines.
+  const okey = (view, path) => `${view.hostId || ''}|${path}`;
+  const sessionsOf = (view) => view.projects.flatMap((p) => p.sessions).concat(view.elsewhere);
+  const isWaiting = (view, s) =>
+    s.status === 'waiting' || (view.approvalsSupported && s.approvals && s.approvals.length);
+
+  /** A readable line for a failed action, naming the host when the hub
+      refused to proxy to it. */
+  function failure(error, view) {
+    const body = error.body || {};
+    const named = (body.host && viewFor(body.host)) || view;
+    const name = named ? named.name : 'that machine';
+    if (error.status === 409 && body.error === 'protocol mismatch') {
+      const versions = body.theirs != null && body.ours != null ? ` (protocol ${body.theirs}, this hub ${body.ours})` : '';
+      return `${name} is running a different ClaudeShip build${versions}. `
+        + 'Restart it when its sessions can end: claudeship hub stop, then claudeship hub start.';
+    }
+    if (error.status === 502 && body.error === 'unreachable') {
+      return `${name} is unreachable right now. Try again when it is back on the network.`;
+    }
+    return error.message;
+  }
 
   const app = document.getElementById('app');
   const tallyEl = h('div', { class: 'tally' });
@@ -179,7 +239,7 @@
   const quickEl = h('button', {
     class: 'btn primary quick', 'aria-label': 'New session in your home folder', title: 'New session in your home folder (auto mode)',
     hidden: true,
-    onclick: () => { if (ui.data && ui.data.home) launch(ui.data.home, 'auto'); },
+    onclick: () => { const v = localView(); if (v && v.home) launch(v, v.home, 'auto'); },
   }, icon('plus'));
 
   const directoryEl = h('div', { class: 'directory' },
@@ -206,6 +266,7 @@
     if (!response.ok) {
       const error = new Error(result.error || `request failed (${response.status})`);
       error.status = response.status;
+      error.body = result;
       throw error;
     }
     return result;
@@ -233,8 +294,8 @@
         data.projects = data.projects || [];
         data.elsewhere = data.elsewhere || [];
         data.permissionModes = data.permissionModes || [];
-        clockOffset = data.now - Date.now();
         ui.data = data;
+        ui.views = buildViews(data);
         ui.unpaired = false;
         ui.error = null;
       }
@@ -246,7 +307,7 @@
       polling = false;
     }
     if (!ui.data) ui.menu = null;  // nothing for a menu to act on; don't let it hold the page
-    quickEl.hidden = !(ui.data && ui.data.home);
+    quickEl.hidden = !(localView() && localView().home);
     quickEl.disabled = ui.launching;
     render(force);
     updateTerminalBar();
@@ -264,7 +325,8 @@
     render(true);
   }
 
-  async function launch(path, mode, resume) {
+  async function launch(view, path, mode, resume) {
+    if (view.down) return;
     if (ui.launching) return;
     ui.launching = true;
     ui.menu = null;
@@ -273,23 +335,24 @@
       const body = { path };
       if (mode) body.permissionMode = mode;
       if (resume) body.resume = resume;
-      const { id } = await post('/api/launch', body);
-      location.hash = `#/s/${id}`;
+      const { id } = await post('/api/launch', withHost(view, body));
+      location.hash = termHash(id, view.hostId);
       poll(true);
     } catch (error) {
-      notify(`Couldn't start a session: ${error.message}`);
+      notify(`Couldn't start a session: ${failure(error, view)}`);
     } finally {
       ui.launching = false;
       render(true);
     }
   }
 
-  async function setDefaultMode(mode) {
+  async function setDefaultMode(view, mode) {
     try {
-      await post('/api/settings', { defaultPermissionMode: mode });
-      if (ui.data) ui.data.defaultPermissionMode = mode;
+      await post('/api/settings', withHost(view, { defaultPermissionMode: mode }));
+      view.defaultPermissionMode = mode;
+      if (view.local && ui.data) ui.data.defaultPermissionMode = mode;
     } catch (error) {
-      notify(`Couldn't save the setting: ${error.message}`);
+      notify(`Couldn't save the setting: ${failure(error, view)}`);
     }
     render(true);
   }
@@ -310,7 +373,7 @@
     // Ages tick over a few times a minute; otherwise only repaint when
     // something changed, and never under an open menu.
     const signature = JSON.stringify([
-      data && { ...data, now: 0 }, ui.error, ui.notice, ui.unpaired, ui.filter, [...ui.open], ui.menu,
+      data && { ...data, now: 0, hosts: data.hosts && data.hosts.map((x) => ({ ...x, now: 0 })) }, ui.error, ui.notice, ui.unpaired, ui.filter, [...ui.open], ui.menu,
       ui.launching, [...ui.answering], data ? Math.floor(Date.now() / 15000) : 0,
     ]);
     // A routine repaint waits for an open menu or a text selection in the
@@ -327,16 +390,21 @@
     ui.signature = signature;
     ui.paintedAt = Date.now();
 
+    const views = ui.views;
+    const multi = views.length > 1;
+    const local = localView() || views[0];
+    const protocolBanner = (view, named) => view.protocol !== PROTOCOL && h('div', { class: 'banner' },
+      named ? `${view.name} is running a different build than this page, so some things may not work. `
+        : 'The hub on the Mac is running a different build than this page, so some things may not work. ',
+      'Restart it when its sessions can end: ', h('code', null, 'claudeship hub stop'), ', then ',
+      h('code', null, 'claudeship hub start'), '.');
     const banners = [
       ui.notice && h('button', {
         class: 'banner', 'data-key': 'notice', title: 'Dismiss',
         onclick: () => { ui.notice = null; render(true); },
       }, ui.notice),
       ui.error && h('div', { class: 'banner' }, ui.error),
-      data && data.protocol !== PROTOCOL && h('div', { class: 'banner' },
-        'The hub on the Mac is running a different build than this page, so some things may not work. ',
-        'Restart it when its sessions can end: ', h('code', null, 'claudeship hub stop'), ', then ',
-        h('code', null, 'claudeship hub start'), '.'),
+      !multi && data && protocolBanner(local, false),
     ];
     if (!data) {
       // No state to show: don't leave the last one's header standing.
@@ -350,56 +418,87 @@
       return;
     }
 
-    const all = data.projects.flatMap((p) => p.sessions).concat(data.elsewhere);
-    const waiting = all.filter((s) => s.status === 'waiting' || (data.approvalsSupported && s.approvals && s.approvals.length)).length;
-    const busy = all.filter((s) => s.status === 'busy').length;
+    // An unreachable host's sessions are last-known, not live: not counted.
+    const counted = views.filter((v) => !v.down).map((v) => [v, sessionsOf(v)]);
+    const total = counted.reduce((n, [, list]) => n + list.length, 0);
+    const waiting = counted.reduce((n, [v, list]) => n + list.filter((s) => isWaiting(v, s)).length, 0);
+    const busy = counted.reduce((n, [, list]) => n + list.filter((s) => s.status === 'busy').length, 0);
     updateTitle();
     hostEl.textContent = data.host;
     tallyEl.replaceChildren(
       waiting ? h('span', { class: 'pill waiting' }, h('span', { class: 'glyph waiting' }), `${waiting} need${waiting === 1 ? 's' : ''} you`) : '',
       busy ? h('span', { class: 'pill busy' }, h('span', { class: 'glyph busy' }), `${busy} working`) : '',
-      h('span', { class: 'pill' }, `${all.length} session${all.length === 1 ? '' : 's'}`));
-    repaint(settingsEl, settings(data));
+      h('span', { class: 'pill' }, `${total} session${total === 1 ? '' : 's'}`));
+    repaint(settingsEl, settings(local, multi));
 
-    const visible = data.projects.filter(matches);
+    const parts = [...banners];
+    if (!multi) {
+      const visible = local.projects.filter(matches);
+      parts.push(...hostBody(local, visible));
+      if (!visible.length && ui.filter) {
+        parts.push(h('div', { class: 'empty' }, `No project matches “${ui.filter}”.`));
+      }
+    } else {
+      let shown = 0;
+      for (const view of views) {
+        const visible = view.projects.filter(matches);
+        // Searching: a machine with nothing that matches stays out of the way.
+        if (ui.filter && !visible.length) continue;
+        shown += 1;
+        parts.push(h('section', { class: `host${view.down ? ' down' : ''}`, 'aria-label': view.name },
+          h('div', { class: 'host-head' },
+            h('h2', null, view.name),
+            view.local && h('span', { class: 'tag' }, 'This hub'),
+            view.down && h('span', { class: 'host-state' },
+              view.lastSeen ? `Unreachable since ${ago(view.lastSeen, local)}` : 'Unreachable')),
+          !view.down && protocolBanner(view, true),
+          view.down && view.protocol !== PROTOCOL && h('div', { class: 'banner' },
+            `${view.name} was running a different build than this page (protocol ${view.protocol}).`),
+          ...hostBody(view, visible),
+          view.rootDisplay && h('div', { class: 'host-foot' },
+            'Projects are the folders in ', h('code', null, view.rootDisplay), ' on ', h('code', null, view.name), '.')));
+      }
+      if (!shown && ui.filter) parts.push(h('div', { class: 'empty' }, `No project matches “${ui.filter}”.`));
+    }
+    repaint(pageEl, parts);
+  }
+
+  /** Running, Running elsewhere, and Projects for one host. */
+  function hostBody(view, visible) {
     const active = visible.filter((p) => p.sessions.length);
     const rest = visible.filter((p) => !p.sessions.length);
-    const parts = [...banners];
-
+    const parts = [];
     if (active.length || !ui.filter) {
       parts.push(h('section', null,
         h('div', { class: 'section-head' },
           h('h2', null, 'Running'),
           h('span', { class: 'count' }, String(active.length))),
         active.length
-          ? h('div', { class: 'cards' }, active.map((p) => card(p, data)))
+          ? h('div', { class: 'cards' }, active.map((p) => card(p, view)))
           : h('div', { class: 'empty' },
               'Nothing is running. Start a session below, or run ', h('code', null, 'claudeship'),
-              ' in a terminal on the Mac.')));
+              view.local ? ' in a terminal on the Mac.' : ` in a terminal on ${view.name}.`)));
     }
     // Sessions running outside the projects folder: shown while they run,
     // never tracked otherwise, right under the projects they sit beside.
-    if (data.elsewhere.length && !ui.filter) {
+    if (view.elsewhere.length && !ui.filter) {
       parts.push(h('section', null,
         h('div', { class: 'section-head' },
           h('h2', null, 'Running elsewhere'),
-          h('span', { class: 'count' }, String(data.elsewhere.length))),
+          h('span', { class: 'count' }, String(view.elsewhere.length))),
         h('div', { class: 'cards' },
-          h('article', { class: `card${data.elsewhere.some((s) => s.status === 'waiting') ? ' attention' : ''}` },
-            h('div', { class: 'sessions' }, data.elsewhere.map((s) => sessionRow(s, null, data)))))));
+          h('article', { class: `card${view.elsewhere.some((s) => s.status === 'waiting') ? ' attention' : ''}` },
+            h('div', { class: 'sessions' }, view.elsewhere.map((s) => sessionRow(s, null, view)))))));
     }
     if (rest.length) {
       parts.push(h('section', null,
         h('div', { class: 'section-head' },
           h('h2', null, 'Projects'),
           h('span', { class: 'count' }, String(rest.length)),
-          h('span', { class: 'where' }, data.rootDisplay)),
-        h('div', { class: 'list' }, rest.map((p) => row(p, data)))));
+          h('span', { class: 'where' }, view.rootDisplay)),
+        h('div', { class: 'list' }, rest.map((p) => row(p, view)))));
     }
-    if (!visible.length && ui.filter) {
-      parts.push(h('div', { class: 'empty' }, `No project matches “${ui.filter}”.`));
-    }
-    repaint(pageEl, parts);
+    return parts;
   }
 
   function branchTag(name) {
@@ -408,7 +507,7 @@
 
   function card(project, data) {
     const count = project.sessions.length;
-    const open = ui.open.has(project.path);
+    const open = ui.open.has(okey(data, project.path));
     return h('article', { class: `card${project.sessions.some((s) => s.status === 'waiting') ? ' attention' : ''}` },
       h('div', { class: 'card-head' },
         h('div', { class: 'card-title' },
@@ -421,48 +520,52 @@
         launchControl(project, data, true),
         h('span', { class: 'spacer' }),
         project.recent.length > 0 && h('button', {
-          class: 'btn quiet', 'aria-expanded': String(open), 'data-key': `earlier:${project.path}`,
-          onclick: () => { toggleOpen(project.path); },
+          class: 'btn quiet', 'aria-expanded': String(open), 'data-key': `earlier:${okey(data, project.path)}`,
+          onclick: () => { toggleOpen(okey(data, project.path)); },
         }, 'Earlier', icon(open ? 'down' : 'right'))),
-      open && recentList(project));
+      open && recentList(project, data));
   }
 
   function sessionRow(session, project, data) {
     const untitled = !session.title;
     const title = session.title || (session.status === 'starting' ? 'Starting…' : 'New conversation');
-    const approvals = data && data.approvalsSupported && Array.isArray(session.approvals) ? session.approvals : [];
+    const approvals = data && !data.down && data.approvalsSupported && Array.isArray(session.approvals) ? session.approvals : [];
     const meta = [h('span', { class: session.status }, STATUS[session.status] || session.status)];
     if (session.status === 'waiting' && session.waitingFor) meta.push(` — ${session.waitingFor}`);
     const extras = [];
-    if (session.since) extras.push(age(session.since));
+    if (session.since) extras.push(age(session.since, data));
     if (!project) extras.push(tilde(session.cwd, data));
     else if (session.sub) extras.push(session.sub);
     if (session.branch && (!project || session.branch !== project.branch)) extras.push(session.branch);
     if (session.viewers > 0) extras.push(`${session.viewers} attached`);
     for (const extra of extras) meta.push(h('span', { class: 'sep' }, '·'), extra);
 
-    const bolt = data && data.approvalsSupported && autoApproveActive(session.autoApprove)
-      ? h('span', { class: 'bolt', title: autoApproveText(session.autoApprove), 'aria-label': autoApproveText(session.autoApprove) }, '⚡')
+    const bolt = data && data.approvalsSupported && autoApproveActive(session.autoApprove, data)
+      ? h('span', { class: 'bolt', title: autoApproveText(session.autoApprove, data), 'aria-label': autoApproveText(session.autoApprove, data) }, '⚡')
       : null;
     const body = [
       h('span', { class: `glyph ${session.status}` }),
       h('span', { class: `session-title${untitled ? ' untitled' : ''}` }, title, bolt),
-      approvals.length ? approvalBox(session, approvals) : h('span', { class: 'session-meta' }, meta),
+      approvals.length ? approvalBox(session, approvals, data) : h('span', { class: 'session-meta' }, meta),
     ];
     if (approvals.length) {
       // Buttons can't nest in buttons: the row is a plain box and Open its own button.
       return h('div', { class: 'session approving' }, body,
         session.attachable
           ? h('button', {
-              class: 'session-go', 'data-key': `session:${session.key}`,
-              onclick: () => { location.hash = `#/s/${session.hubId}`; },
+              class: 'session-go', 'data-key': `session:${data.hostId || ''}:${session.key}`,
+              onclick: () => { location.hash = termHash(session.hubId, data.hostId); },
             }, 'Open', icon('right'))
           : h('span', { class: 'session-go' }, session.background ? 'Background' : 'Terminal only'));
     }
+    if (session.attachable && data.down) {
+      return h('div', { class: 'session external', title: `${data.name} is unreachable.` }, body,
+        h('span', { class: 'session-go' }, 'Unreachable'));
+    }
     if (session.attachable) {
       return h('button', {
-        class: 'session', 'data-key': `session:${session.key}`,
-        onclick: () => { location.hash = `#/s/${session.hubId}`; },
+        class: 'session', 'data-key': `session:${data.hostId || ''}:${session.key}`,
+        onclick: () => { location.hash = termHash(session.hubId, data.hostId); },
       }, body, h('span', { class: 'session-go' }, 'Open', icon('right')));
     }
     const why = session.background
@@ -472,16 +575,16 @@
       h('span', { class: 'session-go' }, session.background ? 'Background' : 'Terminal only'));
   }
 
-  const autoApproveActive = (rule) =>
-    Boolean(rule && (rule.session === true || (Number.isFinite(rule.until) && rule.until > now())));
-  const autoApproveText = (rule) => rule && rule.session === true
+  const autoApproveActive = (rule, view) =>
+    Boolean(rule && (rule.session === true || (Number.isFinite(rule.until) && rule.until > now(view))));
+  const autoApproveText = (rule, view) => rule && rule.session === true
     ? 'Approving everything for this session'
-    : `Approving everything until ${new Date(rule.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+    : `Approving everything until ${new Date(rule.until - view.offset).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 
   /** Approve / Deny / ⋯ and the command summary, in place of the status text. */
-  function approvalBox(session, approvals) {
+  function approvalBox(session, approvals, view) {
     const first = approvals[0];
-    const menuId = `approve:${session.key}`;
+    const menuId = `approve:${view.hostId || ''}:${session.key}`;
     const open = ui.menu === menuId;
     const busy = ui.answering.has(first.id) || ui.answering.has(session.sessionId);
     const extra = approvals.length > 1 ? ` (+${approvals.length - 1} more)` : '';
@@ -489,17 +592,17 @@
     const tip = first.detail || first.summary || first.tool || '';
     const rule = (name, label, about) => h('button', {
       class: 'menu-item', role: 'menuitem', 'data-key': `rule:${session.key}:${name}`,
-      onclick: () => setAutoApprove(session.sessionId, name),
+      onclick: () => setAutoApprove(view, session.sessionId, name),
     }, h('b', null, label), about && h('small', null, about));
     return h('div', { class: 'approval', title: tip || null },
       h('div', { class: 'approval-actions' },
         h('button', {
           class: 'btn primary small', disabled: busy, 'data-key': `allow:${session.key}`,
-          onclick: () => answerApproval(first.id, true),
+          onclick: () => answerApproval(view, first.id, true),
         }, 'Approve'),
         h('button', {
           class: 'btn small', disabled: busy, 'data-key': `deny:${session.key}`,
-          onclick: () => answerApproval(first.id, false),
+          onclick: () => answerApproval(view, first.id, false),
         }, 'Deny'),
         session.sessionId && h('div', { class: 'launch', onclick: (event) => event.stopPropagation() },
           h('button', {
@@ -510,21 +613,21 @@
           open && h('div', { class: 'menu right', role: 'menu' },
             rule('5m', 'Approve all for 5 minutes'),
             rule('session', 'Approve all for this session', 'Until the session ends or the hub restarts.'),
-            autoApproveActive(session.autoApprove) && rule('off', 'Stop approving')))),
+            autoApproveActive(session.autoApprove, view) && rule('off', 'Stop approving')))),
       h('div', { class: 'approval-summary' }, (first.summary || first.tool || 'Permission request') + extra));
   }
 
-  async function answerApproval(id, allow) {
+  async function answerApproval(view, id, allow) {
     if (ui.answering.has(id)) return;
     ui.answering.add(id);
     render(true);
     try {
-      await post('/api/approve', { id, allow });
+      await post('/api/approve', withHost(view, { id, allow }));
     } catch (error) {
       // 404: the terminal (or another screen) answered first, so there is
       // nothing left to answer.
       if (error.status !== 404) {
-        notify(`Couldn't send the answer: ${error.message}`);
+        notify(`Couldn't send the answer: ${failure(error, view)}`);
       }
     } finally {
       ui.answering.delete(id);
@@ -532,14 +635,14 @@
     }
   }
 
-  async function setAutoApprove(sessionId, rule) {
+  async function setAutoApprove(view, sessionId, rule) {
     ui.menu = null;
     ui.answering.add(sessionId);
     render(true);
     try {
-      await post('/api/auto-approve', { sessionId, rule });
+      await post('/api/auto-approve', withHost(view, { sessionId, rule }));
     } catch (error) {
-      notify(`Couldn't change the standing approval: ${error.message}`);
+      notify(`Couldn't change the standing approval: ${failure(error, view)}`);
     } finally {
       ui.answering.delete(sessionId);
       poll(true);
@@ -547,51 +650,52 @@
   }
 
   function launchControl(project, data, primary) {
-    const open = ui.menu === project.path;
+    const mkey = okey(data, project.path);
+    const open = ui.menu === mkey;
     const tone = primary ? ' primary' : '';
     return h('div', { class: 'launch', onclick: (event) => event.stopPropagation() },
       h('button', {
-        class: `btn main${tone}`, disabled: ui.launching, 'data-key': `new:${project.path}`,
+        class: `btn main${tone}`, disabled: ui.launching || data.down, 'data-key': `new:${mkey}`,
         title: `Start in ${MODES[data.defaultPermissionMode]?.[0] || data.defaultPermissionMode} mode`,
-        onclick: () => launch(project.path),
+        onclick: () => launch(data, project.path),
       }, icon('plus'), 'New session'),
       h('button', {
-        class: `btn caret${tone}`, 'aria-label': 'Choose a permission mode', 'aria-expanded': String(open),
-        'data-key': `caret:${project.path}`,
-        onclick: () => { ui.menu = open ? null : project.path; render(true); },
+        class: `btn caret${tone}`, disabled: data.down, 'aria-label': 'Choose a permission mode', 'aria-expanded': String(open),
+        'data-key': `caret:${mkey}`,
+        onclick: () => { ui.menu = open ? null : mkey; render(true); },
       }, icon('down')),
       open && h('div', { class: `menu${primary ? '' : ' right'}`, role: 'menu' },
         h('div', { class: 'menu-label' }, 'Start in'),
         Object.entries(MODES).filter(([mode]) => data.permissionModes.includes(mode)).map(([mode, [name, about]]) =>
           h('button', {
             class: `menu-item${mode === 'bypassPermissions' ? ' danger' : ''}`, role: 'menuitem',
-            'data-key': `mode:${project.path}:${mode}`,
-            onclick: () => launch(project.path, mode),
+            'data-key': `mode:${mkey}:${mode}`,
+            onclick: () => launch(data, project.path, mode),
           }, h('b', null, name), mode === data.defaultPermissionMode && h('span', { class: 'tag' }, 'Default'),
             h('small', null, about)))));
   }
 
-  function recentList(project) {
+  function recentList(project, data) {
     return h('div', { class: 'recent' },
       project.recent.length
         ? project.recent.map((conversation) => h('button', {
-            class: 'recent-item', title: 'Resume this conversation in a new session',
-            'data-key': `resume:${conversation.sessionId}`,
-            onclick: () => launch(project.path, null, conversation.sessionId),
+            class: 'recent-item', title: 'Resume this conversation in a new session', disabled: data.down,
+            'data-key': `resume:${data.hostId || ''}:${conversation.sessionId}`,
+            onclick: () => launch(data, project.path, null, conversation.sessionId),
           },
             h('span', { class: 'title' }, conversation.title),
-            h('span', { class: 'when' }, ago(conversation.at)),
+            h('span', { class: 'when' }, ago(conversation.at, data)),
             h('span', { class: 'resume' }, 'Resume')))
         : h('div', { class: 'recent-none' }, 'No earlier conversations to resume.'));
   }
 
   function row(project, data) {
-    const open = ui.open.has(project.path);
-    const toggle = () => toggleOpen(project.path);
+    const open = ui.open.has(okey(data, project.path));
+    const toggle = () => toggleOpen(okey(data, project.path));
     return h('div', { class: `row${open ? ' open' : ''}` },
       h('div', {
         class: 'row-main', role: 'button', tabindex: '0', 'aria-expanded': String(open),
-        'data-key': `row:${project.path}`,
+        'data-key': `row:${okey(data, project.path)}`,
         onclick: toggle,
         onkeydown: (event) => {
           if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
@@ -601,12 +705,12 @@
         },
       },
         h('div', { class: 'row-name' }, h('b', null, project.name), project.branch && branchTag(project.branch)),
-        h('div', { class: 'row-when' }, project.lastActivity ? ago(project.lastActivity) : ''),
+        h('div', { class: 'row-when' }, project.lastActivity ? ago(project.lastActivity, data) : ''),
         launchControl(project, data, false)),
-      open && recentList(project));
+      open && recentList(project, data));
   }
 
-  function settings(data) {
+  function settings(data, multi) {
     const open = ui.menu === 'settings';
     return [
       h('button', {
@@ -615,16 +719,17 @@
       }, icon('gear')),
       open && h('div', { class: 'menu right settings' },
         h('h4', null, 'New sessions start in'),
-        h('p', null, 'Used by New session and Resume on this page. The arrow beside New session picks a different mode for one launch.'),
+        h('p', null, multi ? `For ${data.name}. Used by New session and Resume on this page; other machines keep their own setting. The arrow beside New session picks a different mode for one launch.` : 'Used by New session and Resume on this page. The arrow beside New session picks a different mode for one launch.'),
         h('div', { class: 'options', role: 'radiogroup' },
           Object.entries(MODES).filter(([mode]) => data.permissionModes.includes(mode)).map(([mode, [name, about]]) =>
             h('button', {
               class: 'option', role: 'radio', 'aria-checked': String(mode === data.defaultPermissionMode),
               'data-key': `default:${mode}`,
-              onclick: () => setDefaultMode(mode),
+              onclick: () => setDefaultMode(data, mode),
             }, h('span', { class: 'dot' }), h('b', null, name), h('small', null, about)))),
-        h('div', { class: 'foot' },
-          'Projects are the folders in ', h('code', null, data.rootDisplay), ' on ', h('code', null, data.host), '.')),
+        // With several hosts each section carries its own footer line.
+        !multi && h('div', { class: 'foot' },
+          'Projects are the folders in ', h('code', null, data.rootDisplay), ' on ', h('code', null, data.name), '.')),
     ];
   }
 
@@ -660,10 +765,14 @@
 
   const encoder = new TextEncoder();
   const coarse = window.matchMedia('(pointer: coarse)').matches;
-  const terminals = new Map();  // hub id → terminal
+  const terminals = new Map();  // terminal key (hub id, host-qualified) → terminal
   // This page is a popped-out window for one session (#/s/<id>/pop).
-  const popped = location.hash.match(/^#\/s\/([0-9a-f]+)\/pop$/);
-  const popups = new Map();     // hub id → the window this page popped it into
+  const popped = location.hash.match(/^#\/s\/([0-9a-f]+)(?:@([0-9A-Za-z_-]+))?\/pop$/);
+  // A terminal is named by its hub id and, off this hub, the host's id:
+  // `#/s/<id>` is local, `#/s/<id>@<host>` another machine in the swarm.
+  const termKey = (id, host) => (host ? `${host}:${id}` : id);
+  const termHash = (id, host) => `#/s/${id}${host ? `@${host}` : ''}`;
+  const popups = new Map();     // terminal key → the window this page popped it into
   let zTop = 100;
   const LAYOUT_KEY = 'claudeship.windows';
 
@@ -680,8 +789,10 @@
   const sameGrid = (a, b) => Boolean(a && b && a.rows === b.rows && a.cols === b.cols);
 
   /** Build a terminal for a session and connect it. `mode` is where it goes. */
-  function createTerminal(id, mode, geometry) {
-    const existing = terminals.get(id);
+  function createTerminal(id, mode, geometry, hostId) {
+    hostId = hostId || null;  // null: the hub serving this page
+    const key = termKey(id, hostId);
+    const existing = terminals.get(key);
     if (existing) { setMode(existing, mode); return existing; }
 
     const host = h('div', { class: 'term-host' });
@@ -748,7 +859,7 @@
     term.open(host);
 
     const t = {
-      id, term, fit, page, bar, host, note, over, project, title, glyph, state, end,
+      id, hostId, key, term, fit, page, bar, host, note, over, project, title, glyph, state, end,
       mode: null,
       geometry: geometry || null,  // {x, y, w, h} of the floating window
       socket: null, ended: false,
@@ -759,7 +870,7 @@
       attempts: 0, refusals: 0, connected: false, timer: null, noteTimer: null, endArmed: null,
       heard: Date.now(), pulse: null, resizeTimer: null, observer: null,
     };
-    terminals.set(id, t);
+    terminals.set(key, t);
     term.onData((text) => send(encoder.encode(text)));
     term.onBinary((text) => send(Uint8Array.from(text, (c) => c.charCodeAt(0))));
 
@@ -809,7 +920,7 @@
     // The first measurement can run before the font has been measured;
     // take it again once layout and fonts have settled.
     const settle = () => {
-      if (terminals.get(id) !== t || t.ended) return;
+      if (terminals.get(key) !== t || t.ended) return;
       measure();
       syncFit();
     };
@@ -819,7 +930,7 @@
     // A socket can die without saying so (a phone waking up on another
     // network). Ask for a pong now and then, and start over if none comes.
     t.pulse = setInterval(() => {
-      if (terminals.get(id) !== t || t.ended || document.hidden) return;
+      if (terminals.get(key) !== t || t.ended || document.hidden) return;
       if (!t.socket || t.socket.readyState !== WebSocket.OPEN) return;
       if (Date.now() - t.heard > 45000) reconnectNow();
       else t.socket.send(JSON.stringify({ type: 'ping' }));
@@ -868,13 +979,14 @@
       t.sent = { ...t.own };
       const socket = new WebSocket(
         `${scheme}://${location.host}/ws/term?id=${encodeURIComponent(t.id)}`
+        + (t.hostId ? `&host=${encodeURIComponent(t.hostId)}` : '')
         + `&rows=${t.sent.rows}&cols=${t.sent.cols}&claim=${claiming ? 1 : 0}`);
       socket.binaryType = 'arraybuffer';
       t.socket = socket;
       t.heard = Date.now();
       let opened = false;
       socket.onopen = () => {
-        if (terminals.get(id) !== t) return;
+        if (terminals.get(key) !== t) return;
         opened = true;
         t.attempts = 0;
         t.refusals = 0;
@@ -888,7 +1000,7 @@
         syncFit();
       };
       socket.onmessage = (event) => {
-        if (terminals.get(id) !== t) return;
+        if (terminals.get(key) !== t) return;
         t.heard = Date.now();
         if (typeof event.data !== 'string') {
           t.term.write(new Uint8Array(event.data));
@@ -907,7 +1019,19 @@
         }
       };
       socket.onclose = () => {
-        if (terminals.get(id) !== t || t.ended || t.socket !== socket) return;
+        if (terminals.get(key) !== t || t.ended || t.socket !== socket) return;
+        // Another machine's terminal that never opened: the home hub refuses
+        // (409) to relay to a peer on a different protocol. A browser can't
+        // read the refusal, but the state says why: stop and say so.
+        const remote = !opened && t.hostId ? viewFor(t.hostId) : null;
+        const home = localView();
+        if (remote && home && remote.protocol != null && remote.protocol !== home.protocol) {
+          setNote(failure({ status: 409, body: { error: 'protocol mismatch', host: t.hostId, theirs: remote.protocol, ours: home.protocol } }, remote),
+            h('button', {
+              class: 'btn', onclick: () => { t.refusals = 0; t.attempts = 0; setNote('Reconnecting…'); connect(); },
+            }, 'Retry'));
+          return;
+        }
         // Never even opening, again and again, while the hub is otherwise
         // answering is the hub saying no (not a flaky network): stop and say
         // so rather than retry forever.
@@ -1021,13 +1145,14 @@
       t.end.disabled = true;
       t.endArmed = null;
       try {
-        await post('/api/kill', { id: t.id });
-      } catch {
-        if (terminals.get(id) !== t) return;
+        await post('/api/kill', t.hostId ? { id: t.id, host: t.hostId } : { id: t.id });
+      } catch (error) {
+        if (terminals.get(key) !== t) return;
         t.end.disabled = false;
         t.end.textContent = 'End';
         t.end.classList.remove('confirm');
-        setNote("Couldn't end the session");
+        setNote(error.status === 409 || error.status === 502
+          ? failure(error, viewFor(t.hostId)) : "Couldn't end the session");
       }
     }
 
@@ -1043,7 +1168,7 @@
         const asked = Date.now();
         t.heard = asked;
         t.socket.send(JSON.stringify({ type: 'ping' }));
-        setTimeout(() => { if (terminals.get(id) === t && !t.ended && t.heard <= asked) reconnectNow(); }, 5000);
+        setTimeout(() => { if (terminals.get(key) === t && !t.ended && t.heard <= asked) reconnectNow(); }, 5000);
       }
     }
 
@@ -1060,8 +1185,8 @@
 
   /** Detach and remove a terminal; the session keeps running. */
   function disposeTerminal(t) {
-    if (terminals.get(t.id) !== t) return;
-    terminals.delete(t.id);
+    if (terminals.get(t.key) !== t) return;
+    terminals.delete(t.key);
     clearTimeout(t.timer);
     clearTimeout(t.noteTimer);
     clearTimeout(t.endArmed);
@@ -1100,9 +1225,9 @@
     if (mode === 'full') {
       layoutViewport();
       t.page.style.zIndex = 1000;
-      if (location.hash !== `#/s/${t.id}` && !popped) {
+      if (location.hash !== termHash(t.id, t.hostId) && !popped) {
         // Stamp the entry with how it was reached, as route() does.
-        history.pushState({ fromDirectory: directoryShown }, '', `#/s/${t.id}`);
+        history.pushState({ fromDirectory: directoryShown }, '', termHash(t.id, t.hostId));
       }
       directoryEl.hidden = true;
     } else if (previous === 'full' || !previous) {
@@ -1214,13 +1339,13 @@
   function popOut(t) {
     const g = t.geometry || nextGeometry();
     const features = `popup=yes,width=${g.w},height=${g.h + 44},left=${window.screenX + g.x},top=${window.screenY + g.y}`;
-    const url = `${location.origin}${location.pathname}#/s/${t.id}/pop`;
-    const popup = window.open(url, `claudeship-${t.id}`, features);
+    const url = `${location.origin}${location.pathname}${termHash(t.id, t.hostId)}/pop`;
+    const popup = window.open(url, `claudeship-${t.key}`, features);
     if (!popup) { notify('The browser blocked the window. Allow pop-ups for this page and try again.'); return; }
-    const id = t.id;
+    const id = t.key;
     const wasFull = t.mode === 'full';
     disposeTerminal(t);
-    popups.set(id, { win: popup, geometry: g, title: t.title.textContent, project: t.project.textContent });
+    popups.set(id, { id: t.id, host: t.hostId, win: popup, geometry: g, title: t.title.textContent, project: t.project.textContent });
     if (wasFull) leaveFull();
     renderDock();
     // A popup closed by hand (the session keeps running) leaves no trace
@@ -1238,14 +1363,14 @@
     if (!entry) return;
     popups.delete(id);
     try { entry.win.close(); } catch { /* already gone */ }
-    createTerminal(id, 'float', entry.geometry);
+    createTerminal(entry.id, 'float', entry.geometry, entry.host);
   }
 
   /** From inside a popped-out window: ask the opener to take the session back. */
   function popIn() {
     const t = fullTerminal();
     if (!t || !window.opener) return;
-    window.opener.postMessage({ type: 'claudeship-popin', id: t.id }, location.origin);
+    window.opener.postMessage({ type: 'claudeship-popin', id: t.key }, location.origin);
     disposeTerminal(t);
     window.close();
   }
@@ -1270,7 +1395,7 @@
       // Three looks: in front, behind another window, minimized.
       const look = t.mode === 'min' ? 'min' : t === front ? 'active' : 'behind';
       chips.push(h('button', {
-        class: `chip ${look}`, 'data-key': `dock:${t.id}`,
+        class: `chip ${look}`, 'data-key': `dock:${t.key}`,
         title: t.mode === 'min' ? 'Restore' : t === front ? 'In front' : 'Bring to front',
         onclick: () => { setMode(t, 'float'); },
       },
@@ -1304,7 +1429,7 @@
     if (popped || !floatingAllowed()) return;
     const windows = [...terminals.values()]
       .filter((t) => t.mode === 'float' || t.mode === 'min')
-      .map((t) => ({ id: t.id, mode: t.mode, ...t.geometry }));
+      .map((t) => ({ id: t.id, host: t.hostId, mode: t.mode, ...t.geometry }));
     try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(windows)); } catch { /* private mode */ }
   }
 
@@ -1317,7 +1442,9 @@
     for (const w of windows) {
       if (typeof w.id !== 'string' || !/^[0-9a-f]+$/.test(w.id)) continue;
       const geometry = [w.x, w.y, w.w, w.h].every(Number.isFinite) ? { x: w.x, y: w.y, w: w.w, h: w.h } : null;
-      createTerminal(w.id, w.mode === 'min' ? 'min' : 'float', geometry);
+      // Entries saved before the swarm have no host: the local hub.
+      const host = typeof w.host === 'string' && /^[0-9A-Za-z_-]+$/.test(w.host) ? w.host : null;
+      createTerminal(w.id, w.mode === 'min' ? 'min' : 'float', geometry, host);
     }
   }
 
@@ -1328,20 +1455,22 @@
     for (const t of terminals.values()) {
       let found = null;
       let owner = null;
-      for (const project of ui.data.projects) {
+      const view = viewFor(t.hostId);
+      if (!view) continue;
+      for (const project of view.projects) {
         for (const session of project.sessions) {
           if (session.hubId === t.id) { found = session; owner = project; }
         }
       }
-      if (!found) found = ui.data.elsewhere.find((s) => s.hubId === t.id) || null;
+      if (!found) found = view.elsewhere.find((s) => s.hubId === t.id) || null;
       if (!found) continue;
-      t.project.textContent = owner ? owner.name : tilde(found.cwd, ui.data);
+      t.project.textContent = owner ? owner.name : tilde(found.cwd, view);
       t.title.textContent = found.title || '';
       t.title.hidden = !found.title;
       t.glyph.className = `glyph ${found.status}`;
       t.state.className = `term-state ${found.status}`;
       t.state.replaceChildren(STATUS[found.status] || found.status,
-        found.since ? h('span', { class: 'long' }, ` · ${age(found.since)}`) : '');
+        found.since ? h('span', { class: 'long' }, ` · ${age(found.since, view)}`) : '');
       t.status = found.status;
     }
     renderDock();
@@ -1353,8 +1482,8 @@
     if (t) {
       document.title = `${t.status === 'waiting' ? '(!) ' : ''}${t.title.textContent || t.project.textContent} — ClaudeShip`;
     } else if (ui.data) {
-      const waiting = ui.data.projects.flatMap((p) => p.sessions).concat(ui.data.elsewhere)
-        .filter((s) => s.status === 'waiting' || (ui.data.approvalsSupported && s.approvals && s.approvals.length)).length;
+      const waiting = ui.views.filter((v) => !v.down)
+        .reduce((n, v) => n + sessionsOf(v).filter((s) => isWaiting(v, s)).length, 0);
       document.title = `${waiting ? `(${waiting}) ` : ''}ClaudeShip — ${ui.data.host}`;
     }
   }
@@ -1406,14 +1535,14 @@
   // so, the terminal's Back can simply go back to it.
   let directoryShown = false;
   function route() {
-    const match = location.hash.match(/^#\/s\/([0-9a-f]+)(\/pop)?$/);
+    const match = location.hash.match(/^#\/s\/([0-9a-f]+)(?:@([0-9A-Za-z_-]+))?(\/pop)?$/);
     if (match) {
       // Stamp a new history entry with how it was reached; an entry come
       // back to (Back/Forward, reload) keeps the stamp it has.
       if (history.state == null) {
         history.replaceState({ fromDirectory: directoryShown && !fullTerminal() }, '');
       }
-      createTerminal(match[1], 'full');
+      createTerminal(match[1], 'full', null, match[2]);
     } else {
       directoryShown = true;
       const t = fullTerminal();

@@ -146,6 +146,8 @@ pub fn run_forever() -> ! {
         }
         let hub = Hub::new(config, tx.clone(), supervisor);
         tokio::spawn(crate::web::server::run(hub.web.shared.clone()));
+        // The swarm's poller (gossip.rs); with no peers it only ticks.
+        tokio::spawn(hub.web.shared.swarm.clone().run());
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {

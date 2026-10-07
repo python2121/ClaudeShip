@@ -8,6 +8,7 @@ pub mod args;
 mod attach;
 mod client;
 mod hub_cmd;
+mod pair;
 mod qr;
 
 use std::ffi::OsString;

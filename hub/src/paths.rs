@@ -55,6 +55,16 @@ pub fn token() -> PathBuf {
     home().join("token")
 }
 
+/// The swarm's shared secret (`swarm.rs`).
+pub fn swarm_secret() -> PathBuf {
+    home().join("swarm.secret")
+}
+
+/// This hub's record and its peers' (`swarm.rs`).
+pub fn peers() -> PathBuf {
+    home().join("peers.json")
+}
+
 /// Create the home directory, owner-only.
 pub fn ensure_home() {
     use std::os::unix::fs::DirBuilderExt;

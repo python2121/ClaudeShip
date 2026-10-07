@@ -84,7 +84,14 @@ permission-hook` would mean "run claude with that argument".
    `distrobox-enter`. `export TERMINAL=ghostty` for row clicks; don't
    `distrobox-export --bin` the binary; linger runs on the host:
    `distrobox-host-exec loginctl enable-linger $USER`.
-6. Verify (see `docs/linux.md`): the tray glyph and popup follow a session's
+6. Join the Mac's swarm (optional): on the box, `claudeship hub pair
+   <link>` with the tailnet link the Mac's `claudeship hub link` prints (or
+   pair both hubs on the phone and take its "Add to the swarm" step). Then
+   `claudeship hub peers` on either machine lists the other as reachable,
+   and the web page and the phone show both machines' sessions from
+   either hub. Both hubs must run the same build (protocol); a hub refuses
+   to relay to a peer on another one and names it.
+7. Verify (see `docs/linux.md`): the tray glyph and popup follow a session's
    state; Approve/Deny reach the hub; clicking a row opens a terminal on
    `claudeship hub attach`; End session works; the web launch resolves
    `claude` from the login shell's PATH with bash `-l -i` quiet; `ulimit -n`

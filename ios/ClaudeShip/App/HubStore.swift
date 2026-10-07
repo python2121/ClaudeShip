@@ -31,12 +31,22 @@ final class HubStore: Identifiable {
     private(set) var unpaired = false
     var notice: String?
     private(set) var launching = false
+    /// A peer refused through this hub (409 a different build, 502 out of
+    /// reach): an alert naming the machine, not a passing notice.
+    var alert: ProxyAlert?
     /// The Mac's clock minus ours: ages are measured against times the Mac wrote.
     @ObservationIgnored private var clockOffset: TimeInterval = 0
     /// "now" on the Mac's clock, advanced once per poll. Stored, not
     /// computed, so only the views showing an age re-render per poll —
     /// `state` is reassigned only when the directory actually changed.
     private(set) var now = Date()
+    /// Each swarm host's clock minus ours, keyed by `HubHost.target ?? ""`
+    /// (a peer's clock can be off from this hub's as much as from ours).
+    /// Learnt only while the host is reachable; an unreachable one keeps
+    /// its last offset (its `now` is as old as its state).
+    @ObservationIgnored private var hostOffsets: [String: TimeInterval] = [:]
+    /// "now" on each host's clock, advanced once per poll like `now`.
+    private(set) var hostNow: [String: Date] = [:]
     /// A session screen is on top: poll less.
     var viewingSession = false
     private var timer: Timer?
@@ -83,10 +93,30 @@ final class HubStore: Identifiable {
         defer { inFlight = false }
         do {
             var fresh = try await connection.state()
-            clockOffset = Double(fresh.now) / 1000 - Date().timeIntervalSince1970
-            now = Date().addingTimeInterval(clockOffset)
-            // `now` differs every time; compare the rest.
+            let here = Date()
+            clockOffset = Double(fresh.now) / 1000 - here.timeIntervalSince1970
+            now = here.addingTimeInterval(clockOffset)
+            var clocks: [String: Date] = [:]
+            for host in fresh.hosts ?? [] {
+                let key = host.target ?? ""
+                if host.isReachable, let theirs = host.now {
+                    hostOffsets[key] = Double(theirs) / 1000 - here.timeIntervalSince1970
+                }
+                clocks[key] = here.addingTimeInterval(hostOffsets[key] ?? clockOffset)
+            }
+            hostNow = clocks
+            // `now` differs every time (and a reachable host's `lastSeen`
+            // with it); compare the rest.
             fresh.now = state?.now ?? fresh.now
+            if let hosts = fresh.hosts {
+                fresh.hosts = hosts.map { host in
+                    guard let old = state?.hosts?.first(where: { $0.id == host.id }) else { return host }
+                    var host = host
+                    host.now = old.now
+                    if host.isReachable && old.isReachable { host.lastSeen = old.lastSeen }
+                    return host
+                }
+            }
             if fresh != state { state = fresh }
             if fresh.host != name {
                 name = fresh.host
@@ -136,63 +166,89 @@ final class HubStore: Identifiable {
         }
     }
 
+    struct ProxyAlert: Equatable {
+        var title: String
+        var message: String
+    }
+
+    /// "now" on a host's clock (`host`: a peer's id; nil, this hub's machine).
+    func now(for host: String?) -> Date { hostNow[host ?? ""] ?? now }
+
+    /// A host's name as a person reads it (`host`: a peer's id).
+    func hostName(_ host: String?) -> String {
+        guard let host else { return hostName }
+        return state?.host(host)?.displayName ?? host
+    }
+
+    /// Says what went wrong: a peer refused through this hub as an alert
+    /// naming it, anything else as the usual notice.
+    private func fail(_ error: Error, _ what: String) {
+        if case HubError.proxy(let refusal) = error {
+            let name = hostName(refusal.host)
+            alert = ProxyAlert(title: refusal.title(hostName: name), message: refusal.message(hostName: name))
+        } else {
+            show("\(what): \(error.localizedDescription)")
+        }
+    }
+
     /// Returns the new session's hub id, or nil (with a notice) on failure.
-    func launch(path: String, mode: String? = nil, resume: String? = nil) async -> String? {
+    /// `host`: the swarm peer to start it on (nil: this hub's machine).
+    func launch(path: String, mode: String? = nil, resume: String? = nil, host: String? = nil) async -> String? {
         guard !launching else { return nil }
         launching = true
         defer { launching = false }
         do {
-            let id = try await connection.launch(path: path, mode: mode, resume: resume)
+            let id = try await connection.launch(path: path, mode: mode, resume: resume, host: host)
             await refresh()
             return id
         } catch {
-            show("Couldn't start a session: \(error.localizedDescription)")
+            fail(error, "Couldn't start a session")
             return nil
         }
     }
 
-    func end(hubId: String) async -> Bool {
+    func end(hubId: String, host: String?) async -> Bool {
         do {
-            try await connection.end(hubId: hubId)
+            try await connection.end(hubId: hubId, host: host)
             await refresh()
             return true
         } catch {
-            show("Couldn't end the session: \(error.localizedDescription)")
+            fail(error, "Couldn't end the session")
             return false
         }
     }
 
-    func setDefaultMode(_ mode: String) async {
+    func setDefaultMode(_ mode: String, host: String? = nil) async {
         do {
-            try await connection.setDefaultMode(mode)
+            try await connection.setDefaultMode(mode, host: host)
             await refresh()
         } catch {
-            show("Couldn't save the setting: \(error.localizedDescription)")
+            fail(error, "Couldn't save the setting")
         }
     }
 
-    func answer(_ approval: HubApproval, allow: Bool) async {
+    func answer(_ approval: HubApproval, allow: Bool, host: String?) async {
         guard !answering.contains(approval.id) else { return }
         answering.insert(approval.id)
         defer { answering.remove(approval.id) }
         do {
-            try await connection.approve(id: approval.id, allow: allow)
+            try await connection.approve(id: approval.id, allow: allow, host: host)
             await refresh()
         } catch {
-            show("Couldn't answer: \(error.localizedDescription)")
+            fail(error, "Couldn't answer")
         }
     }
 
     /// "Approve all …": set the standing rule; the hub answers whatever is
     /// already pending for the session with it. `rule`: "5m", "session", or
     /// "off".
-    func autoApprove(_ session: HubSession, rule: String) async {
+    func autoApprove(_ session: HubSession, rule: String, host: String?) async {
         guard let sessionId = session.sessionId else { return }
         do {
-            try await connection.autoApprove(sessionId: sessionId, rule: rule)
+            try await connection.autoApprove(sessionId: sessionId, rule: rule, host: host)
             await refresh()
         } catch {
-            show("Couldn't change auto-approve: \(error.localizedDescription)")
+            fail(error, "Couldn't change auto-approve")
         }
     }
 
@@ -203,13 +259,9 @@ final class HubStore: Identifiable {
         Task { await refresh() }
     }
 
-    /// The session with this hub id and the project it sits in, if any.
-    func session(hubId: String) -> (session: HubSession, project: HubProject?)? {
-        guard let state else { return nil }
-        for project in state.projects {
-            if let session = project.sessions.first(where: { $0.hubId == hubId }) { return (session, project) }
-        }
-        if let session = state.elsewhere.first(where: { $0.hubId == hubId }) { return (session, nil) }
-        return nil
+    /// The session with this hub id on that host (nil: this hub's machine)
+    /// and the project it sits in, if any.
+    func session(hubId: String, host: String?) -> (session: HubSession, project: HubProject?)? {
+        state?.host(host)?.session(hubId: hubId)
     }
 }

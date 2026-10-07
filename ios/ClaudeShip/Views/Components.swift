@@ -85,6 +85,15 @@ enum Ago {
         return "\(s / 86400)d"
     }
 
+    /// "14:32" today, else "3 Oct, 14:32" — a moment written on another
+    /// clock (`now` is that clock's present), shown on this phone's.
+    static func since(ms: Int, now: Date) -> String {
+        let at = Date(timeIntervalSince1970: Double(ms) / 1000).addingTimeInterval(Date().timeIntervalSince(now))
+        return Calendar.current.isDateInToday(at)
+            ? at.formatted(date: .omitted, time: .shortened)
+            : at.formatted(.dateTime.day().month(.abbreviated).hour().minute())
+    }
+
     /// "just now", "5m ago", "3d ago", else a date.
     static func ago(ms: Int, now: Date) -> String {
         let s = max(0, Int(now.timeIntervalSince1970) - ms / 1000)
@@ -112,5 +121,19 @@ struct NoticeBar: View {
                 .background(Palette.orange.opacity(0.13), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+}
+
+extension View {
+    /// A peer refused through a hub (409/502): an alert naming the
+    /// machine. One, at the root, for whichever hub has one to show.
+    func proxyAlert(_ store: HubStore?) -> some View {
+        alert(store?.alert?.title ?? "", isPresented: Binding(
+            get: { store?.alert != nil }, set: { if !$0 { store?.alert = nil } }
+        )) {
+            Button("OK", role: .cancel) { store?.alert = nil }
+        } message: {
+            Text(store?.alert?.message ?? "")
+        }
     }
 }

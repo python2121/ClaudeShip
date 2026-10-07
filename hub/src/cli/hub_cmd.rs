@@ -15,7 +15,10 @@ const USAGE: &str = "\
 usage: claudeship [claude arguments]   start Claude in this directory, through the hub
        claudeship hub status [--json]   the hub, its web address, and its sessions
        claudeship hub link              the link (and QR code) that pairs a browser with the hub
-       claudeship hub unlink            unpair every browser (a new secret; pair again with link)
+       claudeship hub unlink            unpair every browser, phone, and peer (new secrets; pair again)
+       claudeship hub pair <link>       join the swarm of the hub whose link (from its hub link) this is
+       claudeship hub peers             the other hubs in this one's swarm
+       claudeship hub unpair <name>     drop a hub from the swarm (everywhere, within a few polls)
        claudeship hub start             start the hub if it isn't running
        claudeship hub restart [--force] stop the hub and start it again (--force: even with sessions)
        claudeship hub attach <id>       open a running session in this terminal (hub id or Claude session id)
@@ -65,8 +68,15 @@ pub fn run(args: &[OsString]) -> ! {
                 fail("could not write a new pairing secret");
             }
             println!("Every paired browser is unpaired. Pair again with: claudeship hub link");
+            println!(
+                "This hub also left its swarm (a new swarm secret, no peers). To bring the swarm back, \
+                 run on any one of them: claudeship hub pair <this hub's link from claudeship hub link>"
+            );
             std::process::exit(0);
         }
+        "pair" => super::pair::pair(rest.first()),
+        "peers" => super::pair::peers(),
+        "unpair" => super::pair::unpair(rest.first()),
         "attach" => {
             let Some(target) = rest.first() else {
                 fail("usage: claudeship hub attach <id | claude session id>");
@@ -240,6 +250,8 @@ fn print_status_json() -> ! {
         "protocol": status.get("protocol").cloned().unwrap_or(json!(0)),
         "port": status.get("port").cloned().unwrap_or(json!(0)),
         "webListening": status.get("webListening").cloned().unwrap_or(json!(false)),
+        "swarmId": status.get("swarmId").cloned().unwrap_or(Value::Null),
+        "peerRequests": status.get("peerRequests").cloned().unwrap_or(json!(0)),
         "tailnetAddresses": tailnet,
         "sessions": sessions,
     });

@@ -27,6 +27,13 @@ The hub keeps its socket, config and pairing secret in its **home**:
 `$CLAUDESHIP_HOME` if set, else `$XDG_STATE_HOME/claudeship`, else
 `~/.local/state/claudeship`. The applet reads the same directory.
 
+**Several machines.** To put this hub in a swarm with the Mac's (or any
+other member's), run `claudeship hub pair <link>` here with the link the
+member's `claudeship hub link` prints, or pair both hubs on the phone and
+use its "Add to the swarm" step; `claudeship hub peers` lists the members.
+The web page and the phone then show every machine's sessions from either
+hub (see "The swarm" in [hub.md](hub.md)).
+
 ## The tray applet (`linux/`)
 
 A `QSystemTrayIcon` with a popup styled to pass for a KDE Plasma applet, the
@@ -100,7 +107,10 @@ a `claudeship hub unlink` or a port change needs no restart. Requests go to
 `http://localhost:<port>` with `Cookie: claude_ship=<token>` — the cookie a
 paired browser holds — and no Origin header, which the hub accepts from
 non-browsers. They never go through a proxy: urllib would otherwise honour
-`$http_proxy` for localhost and hand the cookie to it.
+`$http_proxy` for localhost and hand the cookie to it. It reads only the
+state's top-level fields — this machine's sessions — and ignores the
+swarm's `hosts[]`, so its requests never name a `host`: the applet is about
+the box it runs on.
 
 | Call | When |
 |---|---|

@@ -9,11 +9,16 @@ struct SessionScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     let hubId: String
+    /// The swarm peer it runs on (nil: the hub's own machine).
+    var host: String? = nil
     @State private var terminal: TerminalSession?
     @State private var confirmEnd = false
     @State private var ending = false
 
-    private var info: (session: HubSession, project: HubProject?)? { store.session(hubId: hubId) }
+    private var info: (session: HubSession, project: HubProject?)? { store.session(hubId: hubId, host: host) }
+
+    /// Several machines in view: the heading says which one.
+    private var namesHost: Bool { registry.stores.count > 1 || (store.state?.hosts?.count ?? 0) > 1 }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -34,9 +39,10 @@ struct SessionScreen: View {
         .onDisappear { registry.setViewingSession(false) }
         .task {
             if terminal == nil {
-                let session = TerminalSession(hubId: hubId, connection: store.connection)
+                let session = TerminalSession(hubId: hubId, host: host, connection: store.connection)
                 // The store outlives every session screen; no cycle to break.
                 session.hubReachable = { store.error == nil }
+                session.hostName = { [host] in store.hostName(host) }
                 terminal = session
             }
         }
@@ -54,7 +60,7 @@ struct SessionScreen: View {
         .confirmationDialog("End this session?", isPresented: $confirmEnd, titleVisibility: .visible) {
             Button("End session", role: .destructive) {
                 ending = true
-                Task { if !(await store.end(hubId: hubId)) { ending = false } }
+                Task { if !(await store.end(hubId: hubId, host: host)) { ending = false } }
             }
         } message: {
             Text("Claude exits. The conversation can be resumed later.")
@@ -79,8 +85,8 @@ struct SessionScreen: View {
                 Text(info?.project?.name ?? info?.session.cwd ?? "Session")
                     .font(.subheadline.weight(.semibold)).lineLimit(1)
                 if let session = info?.session {
-                    Text([StatusText.label(session.status), session.since.map { Ago.age(ms: $0, now: store.now) },
-                          registry.stores.count > 1 ? store.hostName : nil]
+                    Text([StatusText.label(session.status), session.since.map { Ago.age(ms: $0, now: store.now(for: host)) },
+                          namesHost ? store.hostName(host) : nil]
                         .compactMap { $0 }.joined(separator: " · "))
                         .font(.caption2).foregroundStyle(StatusText.color(session.status)).lineLimit(1)
                 }

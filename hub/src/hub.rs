@@ -1128,6 +1128,8 @@ impl Hub {
             "port": self.config.port,
             "webListening": self.web.listening(),
             "root": self.config.root,
+            "swarmId": self.web.shared.swarm.book.id(),
+            "peerRequests": self.web.shared.swarm.client.sent(),
             "sessions": sessions,
         })
     }
@@ -1203,10 +1205,19 @@ impl Hub {
                 client,
                 json!({"port": self.config.port, "token": self.web.token().unwrap_or_default()}),
             ),
+            // Every browser, phone, and peer pairs again: a new pairing
+            // secret, and this hub leaves its swarm (a new swarm secret,
+            // no peers) without telling the old peers the new one.
             "unlink" => {
                 let ok = self.web.rotate_token();
-                self.reply(client, json!({"ok": ok}));
+                let left = self.web.shared.swarm.book.leave();
+                self.reply(client, json!({"ok": ok && left}));
             }
+            "peers" => self.reply(client, self.web.shared.swarm.book.view()),
+            "unpair" => match self.web.shared.swarm.book.unpair(&string("target")) {
+                Ok(record) => self.reply(client, json!({"ok": true, "record": record.to_value()})),
+                Err(e) => self.fail(client, e),
+            },
             "kill" => {
                 let id = string("id");
                 match self.session_key(&id) {

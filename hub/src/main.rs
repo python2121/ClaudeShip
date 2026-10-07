@@ -19,6 +19,7 @@ mod pty;
 mod service;
 mod session;
 mod supervisor;
+mod swarm;
 mod term;
 mod token;
 mod web;

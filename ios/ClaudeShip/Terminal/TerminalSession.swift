@@ -10,6 +10,10 @@ import UIKit
 @MainActor
 final class TerminalSession: NSObject, TerminalViewDelegate {
     let hubId: String
+    /// The swarm peer the session runs on (nil: the hub's own machine).
+    let hostId: String?
+    /// What to call that machine when the hub won't relay to it.
+    @ObservationIgnored var hostName: () -> String = { "the other machine" }
     private let connection: HubConnection
     @ObservationIgnored private weak var view: TerminalView?
     /// The room the terminal has (TerminalContainer's host view).
@@ -54,8 +58,9 @@ final class TerminalSession: NSObject, TerminalViewDelegate {
     /// The font size in force when mirroring (nil at the normal size).
     private(set) var mirrorFontSize: CGFloat?
 
-    init(hubId: String, connection: HubConnection) {
+    init(hubId: String, host: String? = nil, connection: HubConnection) {
         self.hubId = hubId
+        self.hostId = host
         self.connection = connection
     }
 
@@ -139,7 +144,7 @@ final class TerminalSession: NSObject, TerminalViewDelegate {
         let claiming = UIApplication.shared.applicationState == .active
         owner = claiming
         sent = own
-        guard let request = connection.terminalRequest(hubId: hubId, cols: own.cols, rows: own.rows, claim: claiming) else { return }
+        guard let request = connection.terminalRequest(hubId: hubId, host: hostId, cols: own.cols, rows: own.rows, claim: claiming) else { return }
         let task = connection.session.webSocketTask(with: request)
         self.task = task
         isOpen = false
@@ -159,6 +164,12 @@ final class TerminalSession: NSObject, TerminalViewDelegate {
                     self.handle(message)
                     self.receive(on: task, opened: true)
                 case .failure:
+                    // A home hub that won't relay to a peer of another build
+                    // says so with a 409 on the upgrade: no point retrying.
+                    if !opened, self.hostId != nil, (task.response as? HTTPURLResponse)?.statusCode == 409 {
+                        self.refused(ProxyRefusal(mismatch: true))
+                        return
+                    }
                     self.didClose(opened: opened)
                 }
             }
@@ -178,6 +189,14 @@ final class TerminalSession: NSObject, TerminalViewDelegate {
         connected = true
         measure()
         syncFit()
+    }
+
+    private func refused(_ refusal: ProxyRefusal) {
+        guard ended == nil, !closed else { return }
+        task = nil
+        isOpen = false
+        reconnecting = false
+        note = refusal.message(hostName: hostName())
     }
 
     private func didClose(opened: Bool) {

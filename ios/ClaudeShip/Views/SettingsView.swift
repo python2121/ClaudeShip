@@ -77,6 +77,7 @@ private struct HubSettingsSections: View {
     let store: HubStore
     let pairAnother: (() -> Void)?
     @State private var confirmUnpair = false
+    @State private var swarming = false
 
     var body: some View {
         Section {
@@ -104,8 +105,18 @@ private struct HubSettingsSections: View {
             LabeledContent("Mac", value: store.state?.host ?? store.hostName)
             LabeledContent("Address", value: store.connection.displayAddress)
             LabeledContent("Projects", value: store.state?.rootDisplay ?? "—")
+            if !registry.swarmCandidates(for: store).isEmpty {
+                Button { swarming = true } label: { Label("Add to swarm with…", systemImage: "point.3.connected.trianglepath.dotted") }
+            }
             if let pairAnother {
                 Button { pairAnother() } label: { Label("Pair another hub", systemImage: "plus") }
+            }
+        }
+        .sheet(isPresented: $swarming) {
+            NavigationStack {
+                SwarmView(joining: store, dismissLabel: "Cancel") { swarming = false }
+                    .navigationTitle("Swarm")
+                    .navigationBarTitleDisplayMode(.inline)
             }
         }
         Section {

@@ -6,6 +6,10 @@ struct RootView: View {
     @State private var path: [SessionRoute] = []
     /// From the `-session` launch argument.
     nonisolated(unsafe) static var initialSession: String?
+    /// From the `-swarm` / `-swarm-confirm` launch arguments.
+    enum SwarmScript { case offer, confirm }
+    nonisolated(unsafe) static var initialSwarm: SwarmScript?
+    @State private var swarmOffer: HubStore?
 
     /// Nothing paired, or the only hub stopped accepting this phone (its
     /// secret was rotated): the pairing screen, as with a single hub always.
@@ -24,7 +28,7 @@ struct RootView: View {
                         .environment(\.navigate) { route in path = [route] }
                         .navigationDestination(for: SessionRoute.self) { route in
                             if let store = registry.store(for: route.hub) {
-                                SessionScreen(hubId: route.id).environment(store)
+                                SessionScreen(hubId: route.id, host: route.host).environment(store)
                             } else {
                                 ContentUnavailableView("Hub not paired", systemImage: "link.badge.plus",
                                                        description: Text("This phone is no longer paired with that hub."))
@@ -33,11 +37,23 @@ struct RootView: View {
                 }
             }
         }
+        .proxyAlert(registry.stores.first { $0.alert != nil })
         // A hub that refuses us (or is unpaired) takes its open session with it.
         .onChange(of: registry.stores.filter { !$0.unpaired }.map(\.key)) { _, live in
             path.removeAll { !live.contains($0.hub) }
         }
+        .sheet(item: $swarmOffer) { store in
+            NavigationStack {
+                SwarmView(joining: store, autoConfirm: RootView.initialSwarm == .confirm) { swarmOffer = nil }
+                    .navigationTitle("Swarm")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+        }
         .task {
+            if RootView.initialSwarm != nil, let last = registry.stores.last {
+                await settle()
+                swarmOffer = last
+            }
             if let id = RootView.initialSession {
                 RootView.initialSession = nil
                 if let route = await locate(id) { path = [route] }
@@ -62,8 +78,16 @@ struct RootView: View {
         }
     }
 
-    /// The hub that has a session with this hub id, else the first hub.
+    /// The hub and host that have a session with this hub id (every host
+    /// of every hub is searched), else the first hub.
     private func locate(_ hubId: String) async -> SessionRoute? {
+        await settle()
+        if let route = registry.route(for: hubId) { return route }
+        return registry.stores.first.map { SessionRoute(hub: $0.key, id: hubId) }
+    }
+
+    /// Every hub has answered once (or failed), briefly waited for.
+    private func settle() async {
         for store in registry.stores where store.state == nil {
             await store.refresh()
             // A poll already in flight (the one starting the app) makes
@@ -74,7 +98,5 @@ struct RootView: View {
                 waited += 1
             }
         }
-        let store = registry.stores.first { $0.session(hubId: hubId) != nil } ?? registry.stores.first
-        return store.map { SessionRoute(hub: $0.key, id: hubId) }
     }
 }

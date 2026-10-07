@@ -35,7 +35,10 @@ claudeship hub status         # the hub, its web address, and its sessions
 claudeship hub link           # pairing link + QR code for a browser or the phone
 claudeship hub attach <id>    # open a running session in this terminal
 claudeship hub kill <id>      # end a session
-claudeship hub unlink         # new pairing secret: every browser and phone must pair again
+claudeship hub unlink         # new pairing and swarm secrets: every browser, phone, and peer hub must pair again
+claudeship hub pair <link>    # join the swarm of the hub whose `hub link` this is (see "Several machines")
+claudeship hub peers          # the hubs in this one's swarm
+claudeship hub unpair <name>  # drop a hub from the swarm, everywhere
 claudeship hub stop           # stop the hub (ends its sessions); it restarts on next use
 ```
 
@@ -52,6 +55,12 @@ Projects are the folders in `~/Documents/code`. Running ones come first, with ea
 A session opens full screen. Its bar has minimize, window, pop out, and close: **window** turns it into a floating panel over the directory — drag it by its bar, resize it by the corner, open another session and window that too — **minimize** sends it to a dock along the bottom, and **pop out** gives it a browser window of its own, with a button to pop it back in. Each window is its own connection, so the one you last typed in or resized sets the session's size and the others follow. Floating windows come back after a reload. On a phone (or any narrow window) sessions are full screen or minimized, and the window controls stay out of the way. Close detaches; **End** ends the session.
 
 Security: the hub accepts connections only from this Mac or from Tailscale addresses on its tunnel interface, only by `localhost` or IP literal (no DNS names, so no rebinding), and every request must carry the pairing secret. Treat the pairing link like a password.
+
+## Several machines
+
+Hubs on several machines (a Mac, a Linux box, …) can form a **swarm**, so any one of them shows every machine's sessions. Pair them by hand: on the joining machine run `claudeship hub pair <link>` with the link a member's `claudeship hub link` prints, or pair both hubs on the phone and take its "Add to the swarm" step. A browser or phone paired with any member then sees a section per machine — unreachable ones dimmed with their last-known sessions — and launches, attaches, approves, and ends sessions on any of them through the hub it is paired with, which relays over the tailnet. The menu bar app and the Linux applet stay about the machine they run on. All members must run the same build; a hub won't relay to one on another and says which to restart.
+
+Trust: there is one secret per swarm, and members trust each other alike — anyone paired with any member can enrol more machines. `claudeship hub unpair <name>` removes a machine from every member's list within a few polls; to lock it out for good, follow it with `claudeship hub unlink` and pair the rest again. Details in [docs/hub.md](docs/hub.md) ("The swarm").
 
 ## iPhone app
 

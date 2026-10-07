@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use serde_json::{Value, json};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use super::{ConnectionSlot, Shared};
 use crate::hub::{Command, clamp_size};
@@ -69,12 +69,24 @@ fn text(value: Value) -> Message {
 }
 
 pub async fn run(
-    mut socket: WebSocket,
+    socket: WebSocket,
     shared: Arc<Shared>,
     attach: Attach,
     slot: Option<Arc<ConnectionSlot>>,
     // From before the upgrade's secret was checked, so a rotation that
     // lands while the upgrade completes still counts.
+    epoch: watch::Receiver<u64>,
+) {
+    run_on(socket, shared.hub.clone(), attach, slot, epoch).await;
+}
+
+/// `run` with only the hub's command channel: what a peer's relayed
+/// terminal (`/peer/ws/term`, on `LocalOnly`) gets.
+pub async fn run_on(
+    mut socket: WebSocket,
+    hub: mpsc::UnboundedSender<Command>,
+    attach: Attach,
+    slot: Option<Arc<ConnectionSlot>>,
     mut epoch: watch::Receiver<u64>,
 ) {
     let (sink, mut events, mut abort) = Sink::new();
@@ -84,8 +96,7 @@ pub async fn run(
         return;
     };
     let client = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
-    if shared
-        .hub
+    if hub
         .send(Command::Connected {
             client,
             sink: sink.clone(),
@@ -94,7 +105,7 @@ pub async fn run(
     {
         return;
     }
-    let _ = shared.hub.send(Command::WebAttach {
+    let _ = hub.send(Command::WebAttach {
         client,
         id: attach.id,
         rows,
@@ -155,7 +166,7 @@ pub async fn run(
                     _ => continue,
                 };
                 if !closing {
-                    let _ = shared.hub.send(command);
+                    let _ = hub.send(command);
                 }
             }
             Next::Event(Some(event)) => {
@@ -172,7 +183,7 @@ pub async fn run(
             }
         }
     }
-    let _ = shared.hub.send(Command::Closed { client });
+    let _ = hub.send(Command::Closed { client });
     sink.abort();
     drop(slot);
 }

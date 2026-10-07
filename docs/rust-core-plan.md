@@ -673,17 +673,28 @@ about the machine they run on).
 
 Work items:
 
-- [ ] `swarm.rs`: secret, `peers.json`, records, tombstones, rotation.
-- [ ] `/api/swarm`, `/api/swarm/join`, `/peer/hello`, `/peer/rotate`,
+- [x] `swarm.rs`: secret, `peers.json`, records, tombstones, rotation.
+- [x] `/api/swarm`, `/api/swarm/join`, `/peer/hello`, `/peer/rotate`,
       `/peer/state`, the bearer check, the local-only rule.
-- [ ] Gossip poller and the aggregated `hosts[]` build (per-host `now`).
-- [ ] Proxying: WebSocket relay and POST forwarding, protocol check.
-- [ ] CLI: `hub pair`, `hub peers`, `hub unpair`, `hub unlink` rotation.
-- [ ] Web page host sections; phone "add to swarm" and host sections.
-- [ ] Tests: two private hubs on one Mac (loopback peers allowed under a
+- [x] Gossip poller and the aggregated `hosts[]` build (per-host `now`).
+- [x] Proxying: WebSocket relay and POST forwarding, protocol check
+      (`web/proxy.rs`, `web/peer_api.rs`; tests in `hub/tests/proxy.rs`).
+- [x] CLI: `hub pair`, `hub peers`, `hub unpair`, `hub unlink` rotation.
+- [x] Web page host sections (done: `web/app.js`, per-host clock offsets, host id on
+      every action, terminals, and saved windows; quick "+" is local-only); [x] phone (done: `ios/`, see
+      `ios/CLAUDE.md`): "add to swarm" step after pairing a new hub and in
+      Settings, host sections deduped by host id across paired hubs (local,
+      else first reachable), per-host clocks and banners, `host` on actions
+      and `/ws/term`, 409/502 alerts naming the machine. Verified against two
+      mock hubs in the simulator, not yet against the real hub; the models
+      decode a live two-hub `/api/state` (final review).
+- [x] Tests: two private hubs on one Mac (loopback peers allowed under a
       test knob, since the gate wants tunnel addresses) — join, gossip,
       tombstone, rotation, proxy attach, proxy approve, no re-forwarding
       (a peer request must never produce a peer request), skew refusal.
+      (Done in `hub/tests/swarm.rs`: join, gossip, tombstone, rotation, no
+      re-forwarding, bearer, gate; proxy attach/approve and skew refusal
+      in `hub/tests/proxy.rs`.)
 
 Acceptance: phone paired with the Mac sees the Steam machine's and the NAS's
 sessions, attaches to one on the NAS, approves a prompt there; the Mac asleep,
@@ -701,3 +712,4 @@ one machine removes it everywhere within a few polls.
 - Phase 6: build and run the hub on the Linux box (`procs.rs`/`net.rs` Linux arms, bash `-l -i` quiet, `claude` on PATH, `ulimit -n`, `/dev/ptmx`, `IUTF8`).
 - Phase 6: pair Safari and the phone with the Linux hub by its tailnet IP.
 - Phase 8: the Flatpak question, if ever wanted.
+- Phase 10 acceptance: three real machines (Mac, Steam box, NAS) — the phone sees, attaches, and approves on the NAS via the Mac, then via the Steam hub with the Mac asleep; `hub unpair` removes one everywhere within a few polls.

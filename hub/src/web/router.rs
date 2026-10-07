@@ -9,7 +9,13 @@
 //! | `GET /ws/term?id&rows&cols&claim` | host, same-origin, paired | a terminal (`ws`) |
 //! | `GET /api/state` | host, paired | the directory, cached 1 s |
 //! | `POST /api/launch`, `/api/kill`, `/api/settings`, `/api/approve`, `/api/auto-approve` | host, same-origin, paired, JSON | |
+//! | `POST /api/swarm`, `/api/swarm/join` | host, same-origin, paired, JSON | the swarm (`swarm.rs`) |
+//! | `/peer/*` | host, swarm bearer, POSTs JSON with no foreign Origin | `peer.rs` |
+//! | `/peer/api/*`, `GET /peer/ws/term` | same (the upgrade needs no Origin) | `peer_api.rs`: a peer's relayed action or terminal |
 //! | `GET /*` | host | the page's files |
+//!
+//! A client's action or terminal naming another hub of the swarm (`host`)
+//! is forwarded there by `proxy.rs`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,36 +30,37 @@ use axum::middleware::{Next, from_fn_with_state, map_response};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use serde_json::{Map, Value, json};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::security::{
     constant_time_equals, cookie, is_allowed_host, is_same_origin, percent_decode,
 };
-use super::{ConnectionSlot, Shared, assets, ws};
+use super::{ConnectionSlot, Shared, assets, peer, peer_api, proxy, ws};
 use crate::approvals::Rule;
 use crate::config::HubConfig;
 use crate::hub::{Command, clamp_size};
+use crate::swarm::PeerRecord;
 use crate::token::COOKIE_NAME;
 
 /// Request bodies past this are refused (the API's are a few dozen bytes).
 const MAX_BODY: usize = 1 << 20;
 /// A browser terminal's largest message (a paste).
-const MAX_MESSAGE: usize = 8 << 20;
+pub(super) const MAX_MESSAGE: usize = 8 << 20;
 
 /// What the gate found out about a request, for the handlers.
 #[derive(Clone)]
-struct Gate {
+pub(super) struct Gate {
     /// The Host header, already known to be one we answer to.
     host: String,
     same_origin: bool,
     /// The request carries this hub's pairing secret.
     paired: bool,
     /// Percent-decoded.
-    path: String,
-    query: HashMap<String, String>,
+    pub(super) path: String,
+    pub(super) query: HashMap<String, String>,
     /// Subscribed before the secret was checked: a terminal that passed
     /// the check still hangs up if the secret changed at any point after.
-    epoch: watch::Receiver<u64>,
+    pub(super) epoch: watch::Receiver<u64>,
 }
 
 pub fn router(shared: Arc<Shared>) -> Router {
@@ -66,6 +73,18 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/api/settings", any(api_post))
         .route("/api/approve", any(api_post))
         .route("/api/auto-approve", any(api_post))
+        .route("/api/swarm", any(api_post))
+        .route("/api/swarm/join", any(api_post))
+        .merge(peer::router(peer::LocalOnly {
+            hub: shared.hub.clone(),
+            state: shared.state.clone(),
+            book: shared.swarm.book.clone(),
+        }))
+        .merge(peer_api::router(peer::LocalOnly {
+            hub: shared.hub.clone(),
+            state: shared.state.clone(),
+            book: shared.swarm.book.clone(),
+        }))
         .fallback(fallback)
         .layer(from_fn_with_state(shared.clone(), gate))
         .layer(map_response(common_headers))
@@ -83,11 +102,11 @@ fn respond(status: u16, content_type: &str, body: impl Into<Body>) -> Response {
     response
 }
 
-fn text(status: u16, body: &'static str) -> Response {
+pub(super) fn text(status: u16, body: &'static str) -> Response {
     respond(status, "text/plain; charset=utf-8", body)
 }
 
-fn json_response(status: u16, value: Value) -> Response {
+pub(super) fn json_response(status: u16, value: Value) -> Response {
     respond(status, "application/json", value.to_string())
 }
 
@@ -173,12 +192,33 @@ async fn gate(State(shared): State<Arc<Shared>>, mut request: Request, next: Nex
         .is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
     if !is_auth && upgrade {
         let key = headers.contains_key(header::SEC_WEBSOCKET_KEY);
-        if !(get && path == "/ws/term" && same_origin && paired && key) {
+        // A peer's relayed terminal: the bearer below is its credential,
+        // and a peer is not a browser (no Origin to check).
+        let peer_terminal = get && path == "/peer/ws/term" && key;
+        let browser_terminal = get && path == "/ws/term" && same_origin && paired && key;
+        if !(browser_terminal || peer_terminal) {
             return text(403, "websocket refused");
         }
     }
     if !is_auth && path.starts_with("/api/") && !paired {
         return json_response(401, json!({"error": "not paired"}));
+    }
+    // A peer: the swarm secret as a bearer, compared in constant time. A
+    // peer is not a browser; a POST must still be JSON, and an Origin (a
+    // browser's) must be ours.
+    if path.starts_with("/peer/") {
+        let offered = header_text(headers, header::AUTHORIZATION)
+            .and_then(|v| v.split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+            .map(|(_, secret)| secret.trim());
+        if !offered.is_some_and(|secret| shared.swarm.book.check(secret)) {
+            return json_response(401, json!({"error": "not a peer"}));
+        }
+        let json_type = header_text(headers, header::CONTENT_TYPE)
+            .is_some_and(|t| t.to_lowercase().starts_with("application/json"));
+        if request.method() == Method::POST && !(same_origin && json_type) {
+            return json_response(403, json!({"error": "refused"}));
+        }
     }
     let query = parse_query(request.uri().query().unwrap_or(""));
     request.extensions_mut().insert(Gate {
@@ -192,7 +232,7 @@ async fn gate(State(shared): State<Arc<Shared>>, mut request: Request, next: Nex
     next.run(request).await
 }
 
-fn gate_of(request: &Request) -> Gate {
+pub(super) fn gate_of(request: &Request) -> Gate {
     request
         .extensions()
         .get::<Gate>()
@@ -278,39 +318,59 @@ async fn terminal(State(shared): State<Arc<Shared>>, request: Request) -> Respon
         Ok(upgrade) => upgrade,
         Err(rejection) => return rejection.into_response(),
     };
-    let number = |k: &str| {
-        gate.query
-            .get(k)
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(0)
-    };
-    let size = clamp_size(number("rows"), number("cols"));
     let epoch = gate.epoch.clone();
-    let attach = ws::Attach {
-        id: gate.query.get("id").cloned().unwrap_or_default(),
-        size,
-        // `claim=0`: a screen that was only mirroring reconnects as a
-        // spectator rather than resizing the session under its user.
-        claim: gate.query.get("claim").map(String::as_str) != Some("0"),
-    };
-    upgrade
-        .max_message_size(MAX_MESSAGE)
-        .max_frame_size(MAX_MESSAGE)
-        .on_upgrade(move |socket| ws::run(socket, shared, attach, slot, epoch))
+    let upgrade = upgrade.max_message_size(MAX_MESSAGE).max_frame_size(MAX_MESSAGE);
+    // Another hub's session: relayed there.
+    match proxy::target(&shared, gate.query.get("host").map(|h| Value::String(h.clone())).as_ref()) {
+        Err(refusal) => return refusal.response(),
+        Ok(Some(route)) => return proxy::terminal(shared, route, &gate.query, upgrade, slot, epoch).await,
+        Ok(None) => {}
+    }
+    let attach = attach_from(&gate.query);
+    upgrade.on_upgrade(move |socket| ws::run(socket, shared, attach, slot, epoch))
 }
 
+/// What a terminal's upgrade query asks for.
+pub(super) fn attach_from(query: &HashMap<String, String>) -> ws::Attach {
+    let number = |k: &str| query.get(k).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    ws::Attach {
+        id: query.get("id").cloned().unwrap_or_default(),
+        size: clamp_size(number("rows"), number("cols")),
+        // `claim=0`: a screen that was only mirroring reconnects as a
+        // spectator rather than resizing the session under its user.
+        claim: query.get("claim").map(String::as_str) != Some("0"),
+    }
+}
+
+/// The local directory (cached), plus `hosts`: this hub and every peer's
+/// last state, from the book — nothing here waits on a peer.
 async fn api_state(State(shared): State<Arc<Shared>>, request: Request) -> Response {
     let gate = gate_of(&request);
     if request.method() != Method::GET {
         return other(request.method(), &gate);
     }
-    respond(200, "application/json", shared.state.get(&shared.hub).await)
+    let local = shared.state.get(&shared.hub).await;
+    let Ok(Value::Object(mut state)) = serde_json::from_slice::<Value>(&local) else {
+        return respond(200, "application/json", local);
+    };
+    let hosts = shared.swarm.book.hosts(&Value::Object(state.clone()));
+    state.insert("hosts".into(), Value::Array(hosts));
+    json_response(200, Value::Object(state))
+}
+
+/// A request's body as a JSON object (at most `MAX_BODY`).
+pub(super) async fn read_json_object(request: Request) -> Option<Map<String, Value>> {
+    let body = axum::body::to_bytes(request.into_body(), MAX_BODY).await.ok()?;
+    match serde_json::from_slice::<Value>(&body).ok()? {
+        Value::Object(o) => Some(o),
+        _ => None,
+    }
 }
 
 /// Asks the hub and waits for its answer.
-async fn ask<T>(shared: &Shared, make: impl FnOnce(oneshot::Sender<T>) -> Command) -> Option<T> {
+async fn ask<T>(hub: &mpsc::UnboundedSender<Command>, make: impl FnOnce(oneshot::Sender<T>) -> Command) -> Option<T> {
     let (tx, rx) = oneshot::channel();
-    shared.hub.send(make(tx)).ok()?;
+    hub.send(make(tx)).ok()?;
     rx.await.ok()
 }
 
@@ -340,9 +400,47 @@ async fn api_post(State(shared): State<Arc<Shared>>, request: Request) -> Respon
         return json_response(403, json!({"error": "refused"}));
     };
     let string = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
-    let response = match gate.path.as_str() {
+    match gate.path.as_str() {
+        "/api/swarm" => {
+            // What a joining hub needs: the secret and who is in the swarm.
+            let book = &shared.swarm.book;
+            let peers: Vec<Value> = book.records().iter().map(PeerRecord::to_value).collect();
+            json_response(200, json!({"secret": book.secret(), "peers": peers}))
+        }
+        "/api/swarm/join" => {
+            let Some(secret) = string("secret") else {
+                return json_response(400, json!({"error": "join needs a secret and peers"}));
+            };
+            let peers = PeerRecord::list_from(body.get("peers"));
+            match shared.swarm.join(&secret, peers).await {
+                Ok(value) => json_response(200, value),
+                Err(e) => json_response(400, json!({"error": e})),
+            }
+        }
+        // Another hub's session or settings: forwarded there.
+        path => match proxy::target(&shared, body.get("host")) {
+            Err(refusal) => refusal.response(),
+            Ok(Some(route)) => proxy::forward(&shared, route, path, body).await,
+            Ok(None) => {
+                let response = local_action(&shared.hub, path, &body).await;
+                shared.state.invalidate();
+                response
+            }
+        },
+    }
+}
+
+/// `POST /api/launch|kill|approve|auto-approve|settings` on this hub, for
+/// a client of ours or (`peer_api.rs`) a peer relaying one of its own.
+pub(super) async fn local_action(
+    hub: &mpsc::UnboundedSender<Command>,
+    path: &str,
+    body: &Map<String, Value>,
+) -> Response {
+    let string = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
+    match path {
         "/api/launch" => {
-            let asked = ask(&shared, |reply| Command::WebLaunch {
+            let asked = ask(hub, |reply| Command::WebLaunch {
                 path: string("path").unwrap_or_default(),
                 mode: string("permissionMode"),
                 resume: string("resume"),
@@ -356,7 +454,7 @@ async fn api_post(State(shared): State<Arc<Shared>>, request: Request) -> Respon
         }
         "/api/kill" => {
             let id = string("id").unwrap_or_default();
-            match ask(&shared, |reply| Command::WebKill { id, reply }).await {
+            match ask(hub, |reply| Command::WebKill { id, reply }).await {
                 Some(true) => json_response(200, json!({"ok": true})),
                 Some(false) => json_response(404, json!({"error": "no such session"})),
                 None => hub_gone(),
@@ -366,7 +464,7 @@ async fn api_post(State(shared): State<Arc<Shared>>, request: Request) -> Respon
             let (Some(id), Some(allow)) = (string("id"), body.get("allow").and_then(Value::as_bool)) else {
                 return json_response(400, json!({"error": "approve needs an id and allow"}));
             };
-            match ask(&shared, |reply| Command::Approve { id, allow, reply }).await {
+            match ask(hub, |reply| Command::Approve { id, allow, reply }).await {
                 Some(true) => json_response(200, json!({"ok": true})),
                 Some(false) => json_response(404, json!({"error": "no such approval"})),
                 None => hub_gone(),
@@ -381,25 +479,24 @@ async fn api_post(State(shared): State<Arc<Shared>>, request: Request) -> Respon
                     json!({"error": "auto-approve needs a sessionId (a UUID) and a rule: 5m, session, or off"}),
                 );
             };
-            match ask(&shared, |reply| Command::AutoApprove { session_id, rule, reply }).await {
+            match ask(hub, |reply| Command::AutoApprove { session_id, rule, reply }).await {
                 Some(()) => json_response(200, json!({"ok": true})),
                 None => hub_gone(),
             }
         }
-        _ => {
+        "/api/settings" => {
             let Some(mode) =
                 string("defaultPermissionMode").filter(|m| HubConfig::permission_modes().contains(&m.as_str()))
             else {
                 return json_response(400, json!({"error": "unknown permission mode"}));
             };
-            match ask(&shared, |reply| Command::WebSettings { mode, reply }).await {
+            match ask(hub, |reply| Command::WebSettings { mode, reply }).await {
                 Some(()) => json_response(200, json!({"ok": true})),
                 None => hub_gone(),
             }
         }
-    };
-    shared.state.invalidate();
-    response
+        _ => text(404, "not found"),
+    }
 }
 
 #[cfg(test)]

@@ -103,6 +103,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "claude-sessions",
+ "futures-util",
  "getrandom",
  "http-body-util",
  "hyper",
@@ -114,6 +115,7 @@ dependencies = [
  "serde_json",
  "socket2",
  "tokio",
+ "tokio-tungstenite",
  "tower",
 ]
 
