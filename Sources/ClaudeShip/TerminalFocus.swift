@@ -138,6 +138,20 @@ enum TerminalFocus {
         "cd \(shellSingleQuoted(cwd)) && \(HubCLI.commandName) hub attach \(shellSingleQuoted(hubId))"
     }
 
+    /// The overlay's quick "+": a new Claude session in `cwd` through the
+    /// hub, in auto mode — the Mac's counterpart of the web page's and the
+    /// phone's top-bar "+". Through `claudeship` rather than `claude` so the
+    /// session shows up everywhere and outlives the window.
+    static func newSessionCommand(cwd: String) -> String {
+        "cd \(shellSingleQuoted(cwd)) && \(HubCLI.commandName) --permission-mode auto"
+    }
+
+    /// Open a terminal window in the home directory running a new session.
+    static func openNewSession() -> Outcome {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return openTerminal(cwd: home, command: newSessionCommand(cwd: home))
+    }
+
     static func shellSingleQuoted(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }

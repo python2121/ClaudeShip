@@ -77,7 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hostingController = NSHostingController(rootView: SessionsView(
             store: store,
             onFocusSession: { [weak self] session in self?.focusTerminal(for: session) },
-            onEndSession: { [weak self] session in self?.endSession(session) }))
+            onEndSession: { [weak self] session in self?.endSession(session) },
+            onNewSession: { [weak self] in self?.newHomeSession() }))
         // Report the SwiftUI ideal size as preferredContentSize so we can size
         // the panel to the content (and resize-follow when it changes).
         hostingController.sizingOptions = [.preferredContentSize]
@@ -292,6 +293,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// hand off to TerminalFocus off the main thread — Apple events block
     /// while the target app answers, and the first call to each emulator
     /// blocks on the Automation (TCC) prompt.
+    /// The footer's "+": a terminal window in the home directory running
+    /// `claudeship --permission-mode auto`, through the same adapters the
+    /// Background and Virtual rows use to open a window.
+    private func newHomeSession() {
+        closePanel()
+        focusQueue.async {
+            let outcome = TerminalFocus.openNewSession()
+            NSLog("ClaudeShip: new home session → %@", String(describing: outcome))
+        }
+    }
+
     private func focusTerminal(for session: ClaudeSession) {
         closePanel()
         focusQueue.async {

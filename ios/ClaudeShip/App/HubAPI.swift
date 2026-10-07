@@ -6,6 +6,9 @@ struct HubState: Decodable, Equatable {
     var host: String
     var root: String
     var rootDisplay: String
+    /// The Mac's home directory: where the top bar's quick "+" starts a
+    /// session (absent from an older hub).
+    var home: String?
     var defaultPermissionMode: String
     var permissionModes: [String]
     var now: Int

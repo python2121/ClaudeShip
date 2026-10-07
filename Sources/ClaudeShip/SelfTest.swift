@@ -420,6 +420,8 @@ enum SelfTest {
         t.expectEqual(TerminalFocus.attachTerminalBundleId(running: ["com.googlecode.iterm2"]), "com.googlecode.iterm2", "attach: iTerm2 when running")
         t.expectEqual(TerminalFocus.attachTerminalBundleId(running: []), "com.apple.Terminal", "attach: Terminal.app when nothing runs")
         t.expectEqual(TerminalFocus.shellSingleQuoted("it's"), #"'it'\''s'"#, "shell quote: embedded apostrophe")
+        t.expectEqual(TerminalFocus.newSessionCommand(cwd: "/Users/a b"),
+                      "cd '/Users/a b' && claudeship --permission-mode auto", "new session: home, auto mode, through the hub")
         t.expectEqual(TerminalFocus.attachCommand(cwd: "/Users/a b/code", attachId: "a34398c4"),
                       "cd '/Users/a b/code' && claude attach 'a34398c4'", "attach: command line")
         t.expectEqual(TerminalFocus.ghosttyAttachScript(cwd: "/x", command: "cd '/x' && claude attach 'id'").contains(#"set initial input of cfg to "cd '/x' && claude attach 'id'" & linefeed"#), true, "attach: Ghostty script types the command")
@@ -713,6 +715,8 @@ enum SelfTest {
         t.expectEqual(HubState.launchTarget(tmpRoot + "/proj", root: tmpRoot), canonicalRoot + "/proj", "launch: a project directory")
         t.expectEqual(HubState.launchTarget(tmpRoot + "/proj/../proj/", root: tmpRoot), canonicalRoot + "/proj", "launch: path is normalized")
         t.expectNil(HubState.launchTarget(tmpRoot + "/proj/inner", root: tmpRoot), "launch: not a nested directory")
+        t.expectEqual(HubState.launchTarget(tmpRoot, root: tmpRoot + "/proj", home: tmpRoot), canonicalRoot, "launch: the home directory itself")
+        t.expectNil(HubState.launchTarget(tmpRoot + "/proj", root: tmpRoot + "/other", home: tmpRoot + "/x"), "launch: home does not open its children")
         t.expectNil(HubState.launchTarget(tmpRoot + "/proj/../..", root: tmpRoot), "launch: not above the root")
         t.expectNil(HubState.launchTarget(tmpRoot, root: tmpRoot), "launch: not the root itself")
         t.expectNil(HubState.launchTarget(tmpRoot + "/.hidden", root: tmpRoot), "launch: not a hidden directory")

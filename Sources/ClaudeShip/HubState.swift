@@ -64,11 +64,17 @@ enum HubState {
 
     /// A launch target must be a direct child directory of the root — the
     /// same set the directory page lists. Returns the canonical path.
-    static func launchTarget(_ requested: String, root: String) -> String? {
+    /// Where a web or phone launch may start Claude: a project folder
+    /// directly under the root, or the home directory itself (the quick
+    /// "+" in the clients' top bar, for a session that isn't about any one
+    /// project). Nothing else: the request body is untrusted.
+    static func launchTarget(_ requested: String, root: String, home: String = NSHomeDirectory()) -> String? {
         let path = URL(fileURLWithPath: requested).standardizedFileURL.path
         let rootPath = URL(fileURLWithPath: root).standardizedFileURL.path
-        guard (path as NSString).deletingLastPathComponent == rootPath,
-              !(path as NSString).lastPathComponent.hasPrefix(".")
+        let homePath = URL(fileURLWithPath: home).standardizedFileURL.path
+        guard path == homePath
+                || ((path as NSString).deletingLastPathComponent == rootPath
+                    && !(path as NSString).lastPathComponent.hasPrefix("."))
         else { return nil }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue
@@ -216,6 +222,7 @@ enum HubState {
             "protocol": HubFrame.version,
             "root": root.path,
             "rootDisplay": (root.path as NSString).abbreviatingWithTildeInPath,
+            "home": NSHomeDirectory(),
             "defaultPermissionMode": config.defaultPermissionMode,
             "permissionModes": HubConfig.permissionModes,
             "now": ms(Date()),

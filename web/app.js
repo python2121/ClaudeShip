@@ -172,6 +172,15 @@
       }),
       h('button', { class: 'btn primary', type: 'submit' }, 'Pair')));
 
+  // The quick "+": a session in the home directory, in auto mode, for
+  // work that isn't about any one project. Same look as New session,
+  // without the words or the mode menu.
+  const quickEl = h('button', {
+    class: 'btn primary quick', 'aria-label': 'New session in your home folder', title: 'New session in your home folder (auto mode)',
+    hidden: true,
+    onclick: () => { if (ui.data && ui.data.home) launch(ui.data.home, 'auto'); },
+  }, icon('plus'));
+
   const directoryEl = h('div', { class: 'directory' },
     h('header', { class: 'top' },
       h('div', { class: 'top-inner' },
@@ -180,7 +189,7 @@
           h('span', { class: 'brand-name' }, 'ClaudeShip'),
           hostEl),
         tallyEl,
-        h('div', { class: 'tools' }, searchEl, settingsEl))),
+        h('div', { class: 'tools' }, searchEl, quickEl, settingsEl))),
     pageEl);
   app.append(directoryEl);
 
@@ -232,6 +241,8 @@
       polling = false;
     }
     if (!ui.data) ui.menu = null;  // nothing for a menu to act on; don't let it hold the page
+    quickEl.hidden = !(ui.data && ui.data.home);
+    quickEl.disabled = ui.launching;
     render(force);
     updateTerminalBar();
     if (pollAgain) {

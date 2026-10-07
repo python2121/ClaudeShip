@@ -7,6 +7,8 @@ struct SessionsView: View {
     /// AppDelegate (which also closes the panel); no-op in previews/tests.
     var onFocusSession: (ClaudeSession) -> Void = { _ in }
     var onEndSession: (ClaudeSession) -> Void = { _ in }
+    /// The footer's "+": a new session in the home directory.
+    var onNewSession: () -> Void = {}
     @ViewState private var now: Date = Date()
     @ViewState private var hoveredPid: pid_t? = nil
 
@@ -361,8 +363,15 @@ struct SessionsView: View {
     }
 
     private var footer: some View {
-        HStack {
+        HStack(spacing: 10) {
             Spacer()
+            Button(action: onNewSession) {
+                Image(systemName: "plus.circle")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("New Claude session in your home folder (auto mode), in a new terminal window")
+            .accessibilityLabel("New session in your home folder")
             Menu {
                 Toggle("Invert menu bar colors", isOn: $store.invertMenubarColors)
                     .help("On: solid color block behind the count. Off: colored text on the bare menu bar.")

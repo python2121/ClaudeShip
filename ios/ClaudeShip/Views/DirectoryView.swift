@@ -11,6 +11,7 @@ enum DebugOff {
 
 struct DirectoryView: View {
     @Environment(HubStore.self) private var store
+    @Environment(\.navigate) private var navigate
     @State private var filter = ""
     @State private var settings = false
     @State private var expanded: Set<String> = []
@@ -115,6 +116,25 @@ struct DirectoryView: View {
                 ToolbarItem(placement: .topBarLeading) { tally }.sharedBackgroundVisibility(.hidden)
             } else {
                 ToolbarItem(placement: .topBarLeading) { tally }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                // The quick "+": a session in the Mac's home directory, in
+                // auto mode — the New session button without the words or
+                // the mode menu, for work that isn't about any one project.
+                if let home = store.state?.home, !store.offline {
+                    Button {
+                        Task { if let id = await store.launch(path: home, mode: "auto") { navigate(id) } }
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(width: 30, height: 30)
+                            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(store.launching)
+                    .accessibilityLabel("New session in your home folder")
+                }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { settings = true } label: { Image(systemName: "gearshape") }
