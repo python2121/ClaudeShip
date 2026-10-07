@@ -96,3 +96,5 @@ permission-hook` would mean "run claude with that argument".
    `claudeship hub attach`; End session works; the web launch resolves
    `claude` from the login shell's PATH with bash `-l -i` quiet; `ulimit -n`
    is raised, `/dev/ptmx` is usable, and a UTF-8 paste round-trips (`IUTF8`).
+
+Hub-only in a plain container (NAS): see [containers.md](containers.md).

@@ -3,7 +3,10 @@
 # login as a systemd user service, and register Claude Code's PermissionRequest
 # hook so prompts can be answered from the tray, the web page, and the phone.
 #
-#   ./linux/scripts/install-hub.sh          (SKIP_HOOK=1: leave ~/.claude/settings.json alone)
+#   ./linux/scripts/install-hub.sh          (SKIP_HOOK=1: leave ~/.claude/settings.json alone;
+#                                            SKIP_SERVICE=1: no service step; SKIP_BUILD=1: reuse target/release/claudeship)
+#
+# Plain container (docker/podman, no systemd): see docs/containers.md.
 #
 # Needs cargo (https://rustup.rs). Builds on this machine; no cross-compiling.
 #
@@ -19,13 +22,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEST_DIR="$HOME/.local/bin"
 DEST="$DEST_DIR/claudeship"
 
-if ! command -v cargo >/dev/null 2>&1; then
+if [ "${SKIP_BUILD:-0}" != "1" ] && ! command -v cargo >/dev/null 2>&1; then
     echo "ERROR: cargo not found. Install it from https://rustup.rs" >&2
     exit 1
 fi
 
-echo "==> cargo build --release -p claudeship"
-(cd "$ROOT" && cargo build --release -p claudeship)
+if [ "${SKIP_BUILD:-0}" = "1" ]; then
+    [ -x "$ROOT/target/release/claudeship" ] || { echo "ERROR: SKIP_BUILD=1 but target/release/claudeship is missing" >&2; exit 1; }
+else
+    echo "==> cargo build --release -p claudeship"
+    (cd "$ROOT" && cargo build --release -p claudeship)
+fi
 
 mkdir -p "$DEST_DIR"
 # Copy beside the destination, then rename: a running hub keeps its old
@@ -35,7 +42,9 @@ chmod 755 "$DEST.new.$$"
 mv -f "$DEST.new.$$" "$DEST"
 echo "Installed $DEST"
 
-"$DEST" hub install-service
+if [ "${SKIP_SERVICE:-0}" != "1" ]; then
+    "$DEST" hub install-service || echo "WARNING: service not installed — run: claudeship hub install-service (or claudeship hub run)" >&2
+fi
 
 # Idempotent; touches only its own entry in ~/.claude/settings.json.
 if [ "${SKIP_HOOK:-0}" != "1" ]; then

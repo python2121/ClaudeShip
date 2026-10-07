@@ -157,3 +157,5 @@ A row click picks the first that applies (`shiptray/core/terminal.py`):
 4. `xdg-terminal-exec`.
 
 Arguments stay a list throughout; no shell string is built.
+
+Headless in a plain docker/podman container (no systemd): see [containers.md](containers.md).

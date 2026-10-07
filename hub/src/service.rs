@@ -248,6 +248,43 @@ fn containerenv_name(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Where this process runs.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place {
+    Host,
+    /// A distrobox: the host's systemd can run the hub through it.
+    Distrobox,
+    /// A plain docker/podman container: no service manager at all.
+    Plain,
+}
+
+/// Container markers present: a distrobox when `distrobox-host-exec` is on
+/// PATH or `$CONTAINER_ID` is set, otherwise a plain container.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn place_from(in_container: bool, container_id: Option<&str>, has_host_exec: bool) -> Place {
+    if !in_container {
+        Place::Host
+    } else if has_host_exec || container_id.map(str::trim).is_some_and(|n| !n.is_empty()) {
+        Place::Distrobox
+    } else {
+        Place::Plain
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn place() -> Place {
+    let host_exec = std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("distrobox-host-exec").is_file()));
+    let id = std::env::var("CONTAINER_ID").ok();
+    place_from(in_container(), id.as_deref(), host_exec)
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+const PLAIN_INSTALL: &str = "no service manager in a plain container: run `claudeship hub run` as the \
+     container's command (foreground), keep $HOME on a persistent volume, and check it with \
+     `claudeship hub status`";
+
 /// This process's container, from `/run/.containerenv`, `/.dockerenv` and
 /// `$CONTAINER_ID`; fails (with a hint) when in one with no name.
 #[cfg(not(target_os = "macos"))]
@@ -282,7 +319,10 @@ fn host_command_line(in_box: bool, program: &str, args: &str) -> String {
 /// How to start the service's hub by hand (for `hub stop`'s message).
 #[cfg(not(target_os = "macos"))]
 pub fn start_hint() -> String {
-    host_command_line(in_container(), "systemctl", "--user start claudeship-hub")
+    match place() {
+        Place::Plain => "claudeship hub run".to_string(),
+        p => host_command_line(p == Place::Distrobox, "systemctl", "--user start claudeship-hub"),
+    }
 }
 
 /// Run `systemctl --user …` on the host: directly, or from inside a box
@@ -370,6 +410,11 @@ pub fn bootout() -> bool {
 }
 
 pub fn install(load: bool) -> ! {
+    #[cfg(not(target_os = "macos"))]
+    if place() == Place::Plain {
+        println!("{PLAIN_INSTALL}");
+        std::process::exit(0);
+    }
     let path = unit_path();
     let binary = binary();
     let home = explicit_home();
@@ -440,6 +485,11 @@ pub fn install(load: bool) -> ! {
 }
 
 pub fn uninstall(load: bool) -> ! {
+    #[cfg(not(target_os = "macos"))]
+    if place() == Place::Plain {
+        println!("Nothing to do — a plain container has no service manager, so no service was installed");
+        std::process::exit(0);
+    }
     let path = unit_path();
     if !path.exists() {
         println!("Nothing to do — {} does not exist", path.display());
@@ -450,7 +500,7 @@ pub fn uninstall(load: bool) -> ! {
         println!("unloaded {} (its hub stopped)", label());
     }
     #[cfg(not(target_os = "macos"))]
-    let in_box = in_container();
+    let in_box = place() == Place::Distrobox;
     #[cfg(not(target_os = "macos"))]
     if load {
         let _ = systemctl(in_box, &["disable", "--now", "claudeship-hub.service"]);
@@ -572,6 +622,15 @@ mod tests {
         let err = container_from(true, None, Some("engine=\"podman\"\n")).unwrap_err();
         assert!(err.contains("CONTAINER_ID"), "{err}");
         assert!(container_from(true, None, None).unwrap_err().contains("CONTAINER_ID"), "/.dockerenv only");
+    }
+
+    #[test]
+    fn where_it_runs() {
+        assert_eq!(place_from(false, Some("x"), true), Place::Host);
+        assert_eq!(place_from(true, None, true), Place::Distrobox, "host-exec on PATH");
+        assert_eq!(place_from(true, Some("arch-box"), false), Place::Distrobox, "CONTAINER_ID");
+        assert_eq!(place_from(true, Some(" "), false), Place::Plain, "blank id");
+        assert_eq!(place_from(true, None, false), Place::Plain);
     }
 
     #[test]

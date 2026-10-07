@@ -89,7 +89,7 @@ The hub runs on Linux too (a systemd user service), and a KDE Plasma tray applet
 cd linux && ./scripts/setup.sh && ./scripts/install-linux.sh --autostart   # the tray applet
 ```
 
-Pair a browser or the phone with `claudeship hub link` (use the box's tailnet address). The applet is described in [docs/linux.md](docs/linux.md).
+Pair a browser or the phone with `claudeship hub link` (use the box's tailnet address). The applet is described in [docs/linux.md](docs/linux.md); a headless container: [docs/containers.md](docs/containers.md).
 
 ## Development
 
