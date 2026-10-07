@@ -313,13 +313,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// End a session from the overlay's context menu. A hub session is
-    /// ended by the hub (SIGHUP to its supervisor, SIGKILL if that is
-    /// ignored — the same path as the web app's End button); any other
+    /// ended by the hub over its API (`POST /api/kill`: SIGHUP to its
+    /// supervisor, escalating if that is ignored — the web page's End); any other
     /// session gets the hang-up a closing terminal window would give it,
     /// and a SIGKILL five seconds later if it is still there.
     private func endSession(_ session: ClaudeSession) {
         focusQueue.async {
-            if let hubId = session.hubId, HubCLI.endHubSession(hubId) {
+            if let hubId = session.hubId, HubClient.kill(hubId) {
                 NSLog("ClaudeShip: asked the hub to end session %@", hubId)
                 return
             }

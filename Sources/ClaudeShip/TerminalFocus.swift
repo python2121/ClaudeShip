@@ -135,7 +135,7 @@ enum TerminalFocus {
 
     /// Same, for a session the hub owns.
     static func hubAttachCommand(cwd: String, hubId: String) -> String {
-        "cd \(shellSingleQuoted(cwd)) && \(HubCLI.commandName) hub attach \(shellSingleQuoted(hubId))"
+        "cd \(shellSingleQuoted(cwd)) && claudeship hub attach \(shellSingleQuoted(hubId))"
     }
 
     /// The overlay's quick "+": a new Claude session in `cwd` through the
@@ -143,7 +143,7 @@ enum TerminalFocus {
     /// phone's top-bar "+". Through `claudeship` rather than `claude` so the
     /// session shows up everywhere and outlives the window.
     static func newSessionCommand(cwd: String) -> String {
-        "cd \(shellSingleQuoted(cwd)) && \(HubCLI.commandName) --permission-mode auto"
+        "cd \(shellSingleQuoted(cwd)) && claudeship --permission-mode auto"
     }
 
     /// Open a terminal window in the home directory running a new session.

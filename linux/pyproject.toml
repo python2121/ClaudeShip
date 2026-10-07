@@ -1,0 +1,26 @@
+[project]
+name = "claudeship-tray"
+version = "0.1.0"
+description = "System-tray applet for ClaudeShip: every Claude Code session on the hub at a glance, with Approve/Deny"
+requires-python = ">=3.10"
+dependencies = ["PySide6>=6.6"]
+
+[project.scripts]
+claudeship-tray = "shiptray.__main__:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["shiptray", "shiptray.core", "shiptray.ui"]
+
+[tool.setuptools.package-data]
+shiptray = ["assets/*.png", "assets/*.svg"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# DTZ006: local-time display is intended; RUF012: Qt idioms use class-level lists
+ignore = ["DTZ006", "RUF012"]

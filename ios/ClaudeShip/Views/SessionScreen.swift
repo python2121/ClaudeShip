@@ -3,8 +3,9 @@ import SwiftUI
 /// A session, full screen: the terminal, with who it is and how it's
 /// doing in the bar above.
 struct SessionScreen: View {
+    @Environment(HubRegistry.self) private var registry
+    /// The hub this session lives on (RootView puts it in the environment).
     @Environment(HubStore.self) private var store
-    @Environment(HubConnection.self) private var connection
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     let hubId: String
@@ -29,11 +30,11 @@ struct SessionScreen: View {
                 }
             }
         }
-        .onAppear { store.viewingSession = true }
-        .onDisappear { store.viewingSession = false }
+        .onAppear { registry.setViewingSession(true) }
+        .onDisappear { registry.setViewingSession(false) }
         .task {
             if terminal == nil {
-                let session = TerminalSession(hubId: hubId, connection: connection)
+                let session = TerminalSession(hubId: hubId, connection: store.connection)
                 // The store outlives every session screen; no cycle to break.
                 session.hubReachable = { store.error == nil }
                 terminal = session
@@ -78,7 +79,8 @@ struct SessionScreen: View {
                 Text(info?.project?.name ?? info?.session.cwd ?? "Session")
                     .font(.subheadline.weight(.semibold)).lineLimit(1)
                 if let session = info?.session {
-                    Text([StatusText.label(session.status), session.since.map { Ago.age(ms: $0, now: store.now) }]
+                    Text([StatusText.label(session.status), session.since.map { Ago.age(ms: $0, now: store.now) },
+                          registry.stores.count > 1 ? store.hostName : nil]
                         .compactMap { $0 }.joined(separator: " · "))
                         .font(.caption2).foregroundStyle(StatusText.color(session.status)).lineLimit(1)
                 }

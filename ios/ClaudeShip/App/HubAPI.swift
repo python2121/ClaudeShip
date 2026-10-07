@@ -15,9 +15,11 @@ struct HubState: Decodable, Equatable {
     var `protocol`: Int?
     var projects: [HubProject]
     var elsewhere: [HubSession]
+    /// The hub relays permission prompts (protocol 3; absent before).
+    var approvalsSupported: Bool?
 
-    /// Must match HubFrame.version in the hub (and PROTOCOL in web/app.js).
-    static let protocolVersion = 2
+    /// Must match PROTOCOL in the hub (hub/src/frame.rs) and in web/app.js.
+    static let protocolVersion = 3
 
     var allSessions: [HubSession] { projects.flatMap(\.sessions) + elsewhere }
 }
@@ -49,7 +51,44 @@ struct HubSession: Decodable, Identifiable, Equatable {
     var viewers: Int
     var mode: String?
     var background: Bool
+    /// Claude's session UUID — what auto-approve rules are keyed by.
+    var sessionId: String?
+    /// Permission prompts waiting on an answer (protocol 3; absent before).
+    var approvals: [HubApproval]?
+    var autoApprove: HubAutoApprove?
     var id: String { key }
+
+    var pendingApprovals: [HubApproval] { approvals ?? [] }
+}
+
+/// A permission prompt the hub is holding for a session. The terminal
+/// prompt is live at the same time; whichever answers first wins.
+struct HubApproval: Decodable, Identifiable, Equatable {
+    var id: String
+    var tool: String?
+    var summary: String?
+    var detail: String?
+    /// Epoch ms on the hub's clock.
+    var receivedAt: Int?
+
+    /// "Bash: npm test" — the caption under the session's title. The hub's
+    /// summary already starts with the tool's name; the bare tool is the
+    /// fallback.
+    var caption: String {
+        [summary, tool].compactMap { $0?.isEmpty == false ? $0 : nil }.first ?? ""
+    }
+}
+
+/// A standing "approve all" rule: until a time (epoch ms) or for the session.
+struct HubAutoApprove: Decodable, Equatable {
+    var until: Int?
+    var session: Bool?
+
+    func isActive(now: Date) -> Bool {
+        if session == true { return true }
+        guard let until else { return false }
+        return Double(until) / 1000 > now.timeIntervalSince1970
+    }
 }
 
 struct HubConversation: Decodable, Identifiable, Equatable {
@@ -154,6 +193,19 @@ extension HubConnection {
 
     func end(hubId: String) async throws {
         let (data, status) = try await send(request("/api/kill", method: "POST", json: ["id": hubId]))
+        guard status == 200 else { throw HubError.refused(reason(data, status)) }
+    }
+
+    /// Answers a pending approval. Gone already (answered in the terminal,
+    /// or by another screen) is not an error.
+    func approve(id: String, allow: Bool) async throws {
+        let (data, status) = try await send(request("/api/approve", method: "POST", json: ["id": id, "allow": allow]))
+        guard status == 200 || status == 404 else { throw HubError.refused(reason(data, status)) }
+    }
+
+    /// `rule`: "5m", "session", or "off".
+    func autoApprove(sessionId: String, rule: String) async throws {
+        let (data, status) = try await send(request("/api/auto-approve", method: "POST", json: ["sessionId": sessionId, "rule": rule]))
         guard status == 200 else { throw HubError.refused(reason(data, status)) }
     }
 

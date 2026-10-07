@@ -37,19 +37,55 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
 
 ## How it talks to the hub
 
-- `App/HubConnection.swift` holds the hub's base URL (UserDefaults) and the
-  pairing token (Keychain; an unsigned simulator build has no keychain —
-  `errSecMissingEntitlement` — and falls back to UserDefaults, see
-  `Keychain.swift`). Every request carries `Cookie: claude_ship=<token>`,
-  so the hub treats the phone exactly like a paired browser. No cookie
-  jar: `httpShouldSetCookies = false`.
+- **Several hubs.** `App/HubRegistry.swift` keeps an ordered list of
+  `Hub { id, name, baseURL }` in UserDefaults (`hubs`) and one Keychain
+  item per hub (`token.<uuid>`, service = bundle id; an unsigned simulator
+  build has no keychain — `errSecMissingEntitlement` — and falls back to
+  UserDefaults, see `Keychain.swift`). `name` is the state's `host`,
+  refreshed on each successful poll. The single-hub keys of older builds
+  (`hubURL`, Keychain `token`, `lastHost`) are migrated once. Each hub gets
+  its own `HubConnection` (base URL + token: every request carries
+  `Cookie: claude_ship=<token>`, so the hub treats the phone exactly like a
+  paired browser; no cookie jar, `httpShouldSetCookies = false`) and its own
+  `HubStore` (polling, offline clock, notices, launching — all per hub).
 - Pairing = the link `claudeship hub link` prints: scanned (AVFoundation
-  QR, `QRScannerSheet`), pasted, or `claudeship://pair?link=<url-encoded>`.
-  `HubConnection.parse(link:)` takes the host/port and `k=`.
+  QR, `QRScannerSheet`), pasted, `claudeship://pair?link=<url-encoded>`,
+  or `-pair <link>` (repeatable). `HubConnection.parse(link:)` takes the
+  host/port and `k=`. Pairing **adds** a hub, or gives the hub with the same
+  base URL the new token (same id, place, name). `PairView` is the whole
+  app when nothing is paired or the only hub refuses the token (exactly the
+  old behaviour); otherwise it is a sheet — "Pair another hub" in Settings,
+  "Pair again" in a refused hub's section. Settings: one hub → its settings
+  inline as before; several → a list (swipe or open one to unpair; the
+  default mode is per hub).
+- The directory is one run of sections per hub (`HubSections`), headed by
+  a `HubTitle` row only when two or more are paired — with one, it looks as
+  it always did. Offline (`OfflineNote`), refused, and the protocol banner
+  are per hub. Session screens are `SessionRoute { hub, id }`; RootView
+  puts that hub's store in the environment. The top bar's quick "+" asks
+  which hub (confirmation dialog) when two or more are paired. `-session`
+  and `claudeship://session?id=` open the hub that has that session (else
+  the first).
 - `App/HubAPI.swift` mirrors `/api/state`, `/api/launch`, `/api/kill`,
-  `/api/settings` (models decode the JSON `HubState.build` produces; keep
-  `HubState.protocolVersion` equal to `HubFrame.version`). `HubStore`
-  polls every 2 s while the app is active, same as the page.
+  `/api/settings`, `/api/approve`, `/api/auto-approve` (models decode the
+  JSON the hub's `hub/src/web/state.rs` produces; keep
+  `HubState.protocolVersion` equal to the hub's `PROTOCOL` in
+  `hub/src/frame.rs` — 3). Every protocol-3 field is optional, so an older
+  hub still decodes. `HubStore` polls every 2 s while the app is active,
+  same as the page.
+- **Approvals** (protocol 3): a session entry carries `sessionId`,
+  `approvals: [{id, tool, summary, detail, receivedAt}]`, and
+  `autoApprove: {until | session}`. A row with pendings stops being a
+  NavigationLink (its own buttons must take their taps; the title still
+  opens the session): Approve / Deny / ⋯ sit where the status line was,
+  the first prompt's `summary` (which the hub already prefixes with the
+  tool's name, "Bash: npm test") is the caption, tapping it opens
+  `ApprovalDetail` (the full detail, Approve/Deny at the bottom). ⋯ holds
+  "Approve all for 5 minutes", "Approve all for this session", and "Stop
+  approving" when a rule is set; the hub answers what's already pending
+  for the session when a rule is set, so the app sends nothing more. A yellow bolt marks an active
+  rule. No confirmation on Deny — the terminal prompt stays live, and a
+  404 from `/api/approve` (answered elsewhere) is not an error.
 - `Terminal/TerminalSession.swift` is the attachment: `URLSessionWebSocketTask`
   to `/ws/term?id&rows&cols&claim`, binary frames fed to SwiftTerm, JSON
   control frames the other way. Size rules are the web page's (CLAUDE.md
@@ -87,7 +123,7 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
 - When the Mac stops answering, `HubStore.offline` turns on 5 s after
   the first failed poll (`offlineAfter`; a success in between cancels it,
   so one dropped poll on flaky Wi-Fi changes nothing) and the directory
-  swaps its rows for `OfflineNote` ("Can't connect to <host>"). The data
+  swaps that hub's rows for `OfflineNote` ("Can't connect to <host>"). The data
   is kept, so the rows return the moment a poll succeeds. The clock is
   cancelled when polling stops (background), so the app never wakes to
   a stale "offline".
@@ -95,7 +131,9 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
   appear only in its expanded resume list (`recentRows`). A running
   project's card reaches that list through `EarlierRow`.
 - Launch arguments for a scripted simulator (there is no way to tap the
-  custom-URL "Open?" prompt from outside): `-pair <link>`, `-session <hub
+  custom-URL "Open?" prompt from outside): `-pair <link>` (repeat it for
+  several hubs; a tiny Python server answering `/api/state` on two ports
+  is enough to lay out the multi-hub directory), `-session <hub
   id>`, `-expand <project name>`; `SIMCTL_CHILD_CH_OFF=glyph,launch,header,tally` turns directory
   pieces off for bisecting layout trouble. Screenshots:
   `xcrun simctl io booted screenshot x.png`.

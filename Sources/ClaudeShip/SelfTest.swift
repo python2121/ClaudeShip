@@ -144,42 +144,6 @@ enum SelfTest {
         t.expectEqual(SessionStore.trayColor(.busy), .systemGreen, "tray color: busy → green")
         t.expectEqual(SessionStore.trayColor(.waiting), .systemOrange, "tray color: waiting → orange")
 
-        // MARK: approval wire format
-
-        let hookInput = #"{"session_id":"s-1","cwd":"/tmp/proj","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf build\necho done","description":"clean"}}"#
-        if let line = ApprovalWire.requestLine(fromHookInput: Data(hookInput.utf8)) {
-            t.expectEqual(line.last, 0x0A, "wire: request line newline-terminated")
-            let req = ApprovalWire.parseRequest(line.dropLast())
-            t.expectEqual(req?.sessionId, "s-1", "wire: sessionId round-trips")
-            t.expectEqual(req?.cwd, "/tmp/proj", "wire: cwd round-trips")
-            t.expectEqual(req?.toolName, "Bash", "wire: toolName round-trips")
-            t.expectEqual(req?.summary, "Bash: rm -rf build echo done", "wire: row summary collapses newlines")
-            t.expectEqual(req?.detail, "Bash: rm -rf build\necho done", "wire: hover detail keeps newlines")
-        } else {
-            t.expectEqual(false, true, "wire: requestLine produced nil")
-        }
-        t.expectNil(ApprovalWire.requestLine(fromHookInput: Data("nope".utf8)), "wire: garbage stdin → nil")
-
-        t.expectEqual(ApprovalWire.summary(tool: "Edit", input: ["file_path": "/a/b.swift"]),
-                      "Edit: /a/b.swift", "wire: Edit summary uses file_path")
-        t.expectEqual(ApprovalWire.summary(tool: "Mystery", input: nil), "Mystery", "wire: no input → bare tool name")
-        t.expectEqual(ApprovalWire.summary(tool: "Bash", input: ["command": String(repeating: "x", count: 300)]).count <= 206,
-                      true, "wire: summary clipped")
-        t.expectEqual(ApprovalWire.summary(tool: "Bash", input: ["command": String(repeating: "y", count: 5000)], maxChars: 4000, collapseNewlines: false).count <= 4006,
-                      true, "wire: detail clipped at its own cap")
-
-        t.expectEqual(ApprovalWire.parseResponse(ApprovalWire.responseLine(allow: true).dropLast()), true, "wire: allow round-trips")
-        t.expectEqual(ApprovalWire.parseResponse(ApprovalWire.responseLine(allow: false).dropLast()), false, "wire: deny round-trips")
-        t.expectNil(ApprovalWire.parseResponse(Data("{}".utf8)), "wire: missing behavior → nil")
-
-        t.expectEqual(
-            ApprovalWire.decisionJSON(allow: true),
-            #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#,
-            "wire: allow decision JSON matches CLI schema")
-        t.expectEqual(
-            ApprovalWire.decisionJSON(allow: false).contains(#""behavior":"deny""#), true,
-            "wire: deny decision JSON has deny behavior")
-
         // MARK: auto-approve rules
 
         let now2 = Date(timeIntervalSince1970: 2_000_000)
@@ -187,77 +151,6 @@ enum SelfTest {
         t.expectEqual(SessionStore.ruleAllows(.forSession, now: now2), true, "rules: forSession always allows")
         t.expectEqual(SessionStore.ruleAllows(.until(now2.addingTimeInterval(60)), now: now2), true, "rules: unexpired timer allows")
         t.expectEqual(SessionStore.ruleAllows(.until(now2.addingTimeInterval(-1)), now: now2), false, "rules: expired timer denies")
-
-        // MARK: terminal-answer reconciliation
-
-        let recv = Date(timeIntervalSince1970: 3_000_000)
-        t.expectEqual(SessionStore.resolvedInTerminal(state: .waitingForInput, stateSince: recv.addingTimeInterval(1), receivedAt: recv),
-                      false, "reconcile: still waiting → keep buttons")
-        t.expectEqual(SessionStore.resolvedInTerminal(state: .busy, stateSince: recv.addingTimeInterval(-60), receivedAt: recv),
-                      false, "reconcile: pre-prompt busy (stale stateSince) → keep")
-        t.expectEqual(SessionStore.resolvedInTerminal(state: .busy, stateSince: recv.addingTimeInterval(3), receivedAt: recv),
-                      true, "reconcile: fresh busy → answered in terminal, drop")
-        t.expectEqual(SessionStore.resolvedInTerminal(state: .idle, stateSince: recv.addingTimeInterval(3), receivedAt: recv),
-                      true, "reconcile: fresh idle (denied, turn over) → drop")
-        t.expectEqual(SessionStore.resolvedInTerminal(state: .busy, stateSince: nil, receivedAt: recv),
-                      false, "reconcile: no stateSince → keep (never guess)")
-        t.expectEqual(SessionStore.shouldPruneUnmatched(receivedAt: recv, now: recv.addingTimeInterval(5)),
-                      false, "reconcile: unmatched within grace → keep")
-        t.expectEqual(SessionStore.shouldPruneUnmatched(receivedAt: recv, now: recv.addingTimeInterval(11)),
-                      true, "reconcile: unmatched past grace → prune")
-
-        // MARK: hook installer merge (pure, no file IO)
-
-        let (installed, changed1) = HookInstaller.merged([:])
-        t.expectEqual(changed1, true, "installer: fresh settings gains hook")
-        let matchers = (installed["hooks"] as? [String: Any])?["PermissionRequest"] as? [[String: Any]]
-        let cmd = (matchers?.first?["hooks"] as? [[String: Any]])?.first?["command"] as? String
-        t.expectEqual(cmd, HookInstaller.hookCommand, "installer: command written")
-        let (_, changed2) = HookInstaller.merged(installed)
-        t.expectEqual(changed2, false, "installer: idempotent")
-        let (removedRoot, changed3) = HookInstaller.removed(installed)
-        t.expectEqual(changed3, true, "installer: removal reports change")
-        t.expectNil(removedRoot["hooks"], "installer: emptied containers pruned")
-        let preserved = HookInstaller.merged(["model": "opus", "hooks": ["Stop": [["hooks": []]]]]).0
-        t.expectEqual(preserved["model"] as? String, "opus", "installer: unrelated keys preserved")
-        t.expectEqual(((preserved["hooks"] as? [String: Any])?["Stop"] as? [[String: Any]])?.isEmpty, false,
-                      "installer: unrelated hooks preserved")
-
-        // MARK: approval server ↔ helper socket round-trip
-
-        let sockPath = NSTemporaryDirectory() + "claudeship-test-\(getpid()).sock"
-        let server = ApprovalServer(path: sockPath)
-        let gotRequest = DispatchSemaphore(value: 0)
-        var requestedId: UUID?
-        var requestedSummary: String?
-        server.onRequest = { id, info in
-            requestedId = id
-            requestedSummary = info.summary
-            gotRequest.signal()
-        }
-        if server.start() {
-            var verdict: Bool? = nil
-            let clientDone = DispatchSemaphore(value: 0)
-            Thread.detachNewThread {
-                if let fd = ApprovalSocket.connect(path: sockPath) {
-                    let line = Data(#"{"toolName":"Bash","toolInput":{"command":"ls"},"sessionId":"s-9"}"# .utf8) + Data([0x0A])
-                    _ = line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
-                    var buf = [UInt8](repeating: 0, count: 4096)
-                    let n = read(fd, &buf, buf.count)
-                    if n > 0 { verdict = ApprovalWire.parseResponse(Data(buf[0..<n]).prefix(while: { $0 != 0x0A })) }
-                    close(fd)
-                }
-                clientDone.signal()
-            }
-            t.expectEqual(gotRequest.wait(timeout: .now() + 5), .success, "server: request arrives")
-            t.expectEqual(requestedSummary, "Bash: ls", "server: summary parsed")
-            if let id = requestedId { server.respond(id, allow: true) }
-            t.expectEqual(clientDone.wait(timeout: .now() + 5), .success, "server: client completes")
-            t.expectEqual(verdict, true, "server: client received allow")
-            server.stop()
-        } else {
-            t.expectEqual(false, true, "server: failed to start on \(sockPath)")
-        }
 
         // MARK: terminal focus
 
@@ -482,372 +375,46 @@ enum SelfTest {
         t.expectEqual(StatusFormat.compactDuration(from: start, to: start.addingTimeInterval(59)), "0m", "duration: sub-minute")
         t.expectEqual(StatusFormat.compactDuration(from: start, to: start.addingTimeInterval(9240)), "2h 34m", "duration: hours")
 
-        // MARK: hook installer — repointing after a rename
-        let staleHook: [String: Any] = ["hooks": ["PermissionRequest": [
-            ["hooks": [["type": "command", "command": "/Applications/Old.app/Contents/MacOS/Old --permission-hook", "timeout": 1]]],
-        ]]]
-        let (repointed, repointChanged) = HookInstaller.merged(staleHook)
-        t.expectEqual(repointChanged, true, "hook: a stale command path is repointed")
-        let repointedMatchers = (repointed["hooks"] as? [String: Any])?["PermissionRequest"] as? [[String: Any]]
-        let repointedEntries = repointedMatchers?.first?["hooks"] as? [[String: Any]]
-        let repointedCommand = repointedEntries?.first?["command"] as? String
-        t.expectEqual(repointedCommand, HookInstaller.hookCommand, "hook: repointed to the installed app")
-        t.expectEqual(HookInstaller.merged(repointed).changed, false, "hook: nothing to do once current")
+        // MARK: hub client — /api/state
 
-        // MARK: hub — wire framing
-
-        let helloFrame = HubFrame.encodeJSON(.hello, ["op": "status"])
-        let outputFrame = HubFrame.encode(.output, Data([0x1b, 0x5b, 0x48, 0x00, 0xff]))
-        var frameDecoder = HubFrameDecoder()
-        let stream = helloFrame + outputFrame
-        let firstHalf = frameDecoder.feed(Data(stream.prefix(7)))
-        t.expectEqual(firstHalf?.count, 0, "frames: a partial frame yields nothing yet")
-        let rest = frameDecoder.feed(Data(stream.dropFirst(7)))
-        t.expectEqual(rest?.map { $0.0 }, [.hello, .output], "frames: both frames once the bytes arrive")
-        t.expectEqual(rest.map { HubFrame.json($0[0].1)["op"] as? String }, "status", "frames: JSON payload round-trips")
-        t.expectEqual(rest?.last?.1, Data([0x1b, 0x5b, 0x48, 0x00, 0xff]), "frames: binary payload untouched")
-        var junkDecoder = HubFrameDecoder()
-        t.expectEqual(junkDecoder.feed(Data("GET / HTTP/1.1\r\n".utf8)) == nil, true, "frames: unknown type byte is a protocol error")
-        var hugeDecoder = HubFrameDecoder()
-        t.expectEqual(hugeDecoder.feed(Data([0x4f, 0x7f, 0xff, 0xff, 0xff])) == nil, true, "frames: oversized length is a protocol error")
-
-        // MARK: hub — terminal stream
-
-        func replayed(_ pieces: [TerminalStream.Piece]) -> String {
-            pieces.map { piece -> String in
-                switch piece {
-                case .bytes(let data): return String(decoding: data, as: UTF8.self)
-                case .clear: return "<CLEAR>"
-                }
-            }.joined()
-        }
-        let esc = "\u{1b}"
-        var modeStream = TerminalStream()
-        _ = modeStream.feed(Data("\(esc)[?1049h\(esc)[?25l\(esc)[?2004h\(esc)[?1004h\(esc)[>1u\(esc)[>4;2m\(esc)[?1004l".utf8))
-        t.expectEqual(modeStream.modes.dec[1049], true, "modes: alt screen set")
-        t.expectEqual(modeStream.modes.dec[25], false, "modes: cursor hidden")
-        t.expectEqual(modeStream.modes.dec[1004], false, "modes: focus reporting set then reset")
-        t.expectEqual(modeStream.modes.kitty, [1], "modes: kitty flags pushed")
-        t.expectEqual(modeStream.modes.modifyOtherKeys, 2, "modes: modifyOtherKeys level")
-        t.expectEqual(String(decoding: modeStream.modes.restoreSequence, as: UTF8.self),
-                      "\(esc)[?1049h\(esc)[?25l\(esc)[?2004h\(esc)[>1u\(esc)[>4;2m", "modes: restore enters alt screen first")
-        t.expectEqual(String(decoding: modeStream.modes.resetSequence, as: UTF8.self),
-                      "\(esc)[<1u\(esc)[>4;0m\(esc)[?25h\(esc)[?2004l\(esc)[?1049l\(esc)[0m", "modes: reset leaves alt screen last")
-        _ = modeStream.feed(Data("\(esc)[<u\(esc)[>4m\(esc)[?1049l\(esc)[?25h\(esc)[?2004l".utf8))
-        t.expectEqual(modeStream.modes.resetSequence.isEmpty, true, "modes: nothing to undo after the program cleans up")
-        t.expectEqual(TerminalModes().restoreSequence.isEmpty, true, "modes: default state needs no restore")
-
-        // A sequence split across reads is still one sequence.
-        var splitStream = TerminalStream()
-        let splitA = splitStream.feed(Data("ab\(esc)[?20".utf8))
-        let splitB = splitStream.feed(Data("04hcd".utf8))
-        t.expectEqual(replayed(splitA) + replayed(splitB), "ab\(esc)[?2004hcd", "stream: split sequence reassembled in order")
-        t.expectEqual(splitStream.modes.dec[2004], true, "stream: split sequence still tracked")
-
-        // Queries, clipboard writes, notifications, and bells don't replay.
-        var filterStream = TerminalStream()
-        let noisy = "A\(esc)[c\(esc)[>0q\(esc)[6n\(esc)[?u\(esc)[?2026$p\(esc)[14tB"
-            + "\(esc)]11;?\u{07}\(esc)]52;c;aGk=\u{07}\(esc)]9;done\(esc)\\\(esc)]777;notify;x;y\u{07}"
-            + "\(esc)P+q544e\(esc)\\\(esc)_Gi=1,a=q;AAAA\(esc)\\\u{07}C"
-        t.expectEqual(replayed(filterStream.feed(Data(noisy.utf8))), "ABC", "stream: queries and one-shot effects dropped from replay")
-        var keepStream = TerminalStream()
-        let kept = "\(esc)[1;31mred\(esc)[0m\(esc)]0;title\u{07}\(esc)]9;4;1;50\u{07}\(esc)[2 q\(esc)[8;30;100t\(esc)[1;1;2;2$x\(esc)(B"
-        t.expectEqual(replayed(keepStream.feed(Data(kept.utf8))), kept, "stream: styling, titles, progress, and other state kept")
-        t.expectEqual(TerminalStream.isQueryCSI(params: Array("!".utf8), final: 0x70), false, "stream: soft reset is not a query")
-        t.expectEqual(TerminalStream.isQueryCSI(params: Array(">4".utf8), final: 0x6e), false, "stream: CSI > 4 n is a setting, not a status query")
-
-        // What a mid-sequence attacher must be handed: the consumed half.
-        var pendingStream = TerminalStream()
-        _ = pendingStream.feed(Data("text\(esc)[38;2;12".utf8))
-        t.expectEqual(String(decoding: pendingStream.pendingBytes, as: UTF8.self), "\(esc)[38;2;12", "stream: half a CSI is pending")
-        _ = pendingStream.feed(Data(";34;56m".utf8))
-        t.expectEqual(pendingStream.pendingBytes.isEmpty, true, "stream: nothing pending once it completes")
-        _ = pendingStream.feed(Data("\(esc)]0;title\(esc)".utf8))
-        t.expectEqual(String(decoding: pendingStream.pendingBytes, as: UTF8.self), "\(esc)]0;title\(esc)", "stream: a string caught at its terminator's ESC")
-        var mokStream = TerminalStream()
-        _ = mokStream.feed(Data("\(esc)[>4;2m\(esc)[>4n".utf8))
-        t.expectEqual(mokStream.modes.modifyOtherKeys, 0, "modes: CSI > 4 n turns modifyOtherKeys off")
-        _ = mokStream.feed(Data("\(esc)[>4;1m\(esc)[>m".utf8))
-        t.expectEqual(mokStream.modes.modifyOtherKeys, 0, "modes: bare CSI > m resets it")
-
-        let qr = HubCLI.qrModules("http://100.101.102.103:7433/auth?k=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-        t.expectEqual(qr.map { $0.count >= 21 && $0.allSatisfy { $0.count == qr!.count } }, true, "qr: a square symbol")
-        if let qr {
-            // Finder patterns sit in three corners; the fourth is how a
-            // reader tells the symbol's orientation, so it must be bottom-right.
-            func finder(_ x: Int, _ y: Int) -> Bool {
-                (0..<7).allSatisfy { qr[y][x + $0] && qr[y + 6][x + $0] && qr[y + $0][x] && qr[y + $0][x + 6] }
-            }
-            let n = qr.count
-            t.expectEqual([finder(0, 0), finder(n - 7, 0), finder(0, n - 7), finder(n - 7, n - 7)],
-                          [true, true, true, false], "qr: upright (finders top-left, top-right, bottom-left)")
-        }
-
-        // Clearing screen + scrollback restarts the replay.
-        var clearStream = TerminalStream()
-        _ = clearStream.feed(Data("\(esc)[?2004h".utf8))
-        let cleared = clearStream.feed(Data("old\(esc)[2J\(esc)[3J\(esc)[Hnew".utf8))
-        t.expectEqual(replayed(cleared), "<CLEAR>\(esc)[Hnew", "stream: clear pair drops what came before")
-        if case .clear(let modesAtClear)? = cleared.first {
-            t.expectEqual(modesAtClear.dec[2004], true, "stream: clear carries the modes in force")
+        let stateJSON = #"""
+        {"protocol":3,"approvalsSupported":true,"projects":[{"name":"app","sessions":[
+          {"pid":101,"hubId":"ab12cd","status":"waiting","approvals":[
+            {"id":"ap-1","tool":"Bash","summary":"Bash: ls","detail":"Bash: ls\n-la","receivedAt":1700000000000}],
+           "autoApprove":{"until":1700000300000}},
+          {"pid":102,"status":"idle","autoApprove":null}]}],
+         "elsewhere":[{"pid":103,"hubId":"ef34gh","sessionId":"s-3","autoApprove":{"session":true}},{"cwd":"/no-pid"}]}
+        """#
+        if let hubState = HubClient.parseState(Data(stateJSON.utf8)) {
+            t.expectEqual(hubState.sessions.map(\.pid), [101, 102, 103], "hub state: sessions from projects and elsewhere, pid-less skipped")
+            t.expectEqual(hubState.sessions.map(\.hubId), ["ab12cd", nil, "ef34gh"], "hub state: hub ids")
+            t.expectEqual(hubState.approvalsUsable, true, "hub state: protocol 3 with approvals is usable")
+            t.expectEqual(hubState.sessions[0].approvals, [HubClient.Approval(
+                id: "ap-1", tool: "Bash", summary: "Bash: ls", detail: "Bash: ls\n-la",
+                receivedAt: Date(timeIntervalSince1970: 1_700_000_000))], "hub state: approval decoded")
+            t.expectEqual(hubState.sessions[0].autoApprove, .until(Date(timeIntervalSince1970: 1_700_000_300)), "hub state: timed rule")
+            t.expectNil(hubState.sessions[1].autoApprove, "hub state: null rule")
+            t.expectEqual(hubState.sessions[2].autoApprove, .forSession, "hub state: session rule")
+            t.expectEqual(hubState.sessions[2].sessionId, "s-3", "hub state: session id when present")
         } else {
-            t.expectEqual(true, false, "stream: clear piece present")
+            t.expectEqual(false, true, "hub state: parses")
         }
-        var noClearStream = TerminalStream()
-        let notCleared = "\(esc)[2Jtext\(esc)[3J"
-        t.expectEqual(replayed(noClearStream.feed(Data(notCleared.utf8))), notCleared, "stream: text between the two is not a clear pair")
-        var altStream = TerminalStream()
-        let altClear = "\(esc)[?1049h\(esc)[2J\(esc)[3J"
-        t.expectEqual(replayed(altStream.feed(Data(altClear.utf8))), altClear, "stream: a clear inside the alt screen keeps the main-screen replay")
+        t.expectEqual(HubClient.parseState(Data(#"{"protocol":2,"projects":[],"elsewhere":[]}"#.utf8))?.approvalsUsable, false,
+                      "hub state: an older hub gets no approval buttons")
+        t.expectEqual(HubClient.parseState(Data(#"{"protocol":4,"approvalsSupported":true}"#.utf8))?.approvalsUsable, false,
+                      "hub state: a newer protocol gets none either")
+        t.expectNil(HubClient.parseState(Data("<html>".utf8)), "hub state: not JSON → nil")
+        t.expectEqual(HubClient.port(configData: Data(#"{"port":9000}"#.utf8)), 9000, "hub config: port")
+        t.expectEqual(HubClient.port(configData: Data(#"{"port":99999}"#.utf8)), 7433, "hub config: out of range → default")
+        t.expectEqual(HubClient.port(configData: nil), 7433, "hub config: missing → default")
 
-        // MARK: hub — whose keystroke was that
+        // MARK: flags that moved to the hub
 
-        func activity(_ text: String) -> Bool { TerminalInput.isUserActivity(Data(text.utf8)) }
-        t.expectEqual(activity("a"), true, "input: a key")
-        t.expectEqual(activity("\r"), true, "input: return")
-        t.expectEqual(activity("\(esc)"), true, "input: the Esc key")
-        t.expectEqual(activity("\(esc)[A"), true, "input: an arrow key")
-        t.expectEqual(activity("\(esc)[200~pasted\(esc)[201~"), true, "input: a paste")
-        t.expectEqual(activity("\(esc)b"), true, "input: Alt+key")
-        t.expectEqual(activity("\(esc)[<0;10;5M"), true, "input: a mouse click")
-        t.expectEqual(activity("\(esc)[<64;10;5M"), true, "input: the scroll wheel")
-        t.expectEqual(activity("\(esc)[<32;10;5M"), true, "input: a drag")
-        t.expectEqual(activity("\(esc)[<35;10;5M"), false, "input: the pointer merely moving")
-        t.expectEqual(TerminalInput.isUserActivity(Data([0x1b, 0x5b, 0x4d, 32 + 35, 40, 40])), false, "input: legacy-encoded pointer motion")
-        t.expectEqual(TerminalInput.isUserActivity(Data([0x1b, 0x5b, 0x4d, 32 + 0, 40, 40])), true, "input: legacy-encoded click")
-        t.expectEqual(activity("\(esc)[I"), false, "input: focus gained")
-        t.expectEqual(activity("\(esc)[O"), false, "input: focus lost")
-        t.expectEqual(activity("\(esc)[?62;22c"), false, "input: device attributes answer")
-        t.expectEqual(activity("\(esc)[24;80R"), false, "input: cursor position answer")
-        t.expectEqual(activity("\(esc)[?1u"), false, "input: keyboard flags answer")
-        t.expectEqual(activity("\(esc)[?2026;2$y"), false, "input: mode report")
-        t.expectEqual(activity("\(esc)]11;rgb:1515/1414/1313\(esc)\\\(esc)[?997;1n"), false, "input: color answers")
-        t.expectEqual(activity("\(esc)P>|xterm.js(5.5.0)\(esc)\\"), false, "input: version answer")
-        t.expectEqual(activity("\(esc)[I\(esc)[?62c"), false, "input: several reports together")
-        t.expectEqual(activity("\(esc)[Ix"), true, "input: a report followed by a key")
-        t.expectEqual(activity(""), false, "input: nothing")
-
-        t.expectEqual(Hub.exitCode(fromWaitStatus: 7 << 8), 7, "exit: status 7")
-        t.expectEqual(Hub.exitCode(fromWaitStatus: 0), 0, "exit: success")
-        t.expectEqual(Hub.exitCode(fromWaitStatus: SIGHUP), 129, "exit: killed by SIGHUP")
-        t.expectEqual(Hub.exitCode(fromWaitStatus: SIGKILL | 0x80), 137, "exit: killed, core flag ignored")
-
-        t.expectEqual(HubCLI.isCLIName("claudeship"), true, "cli name: the command")
-        t.expectEqual(HubCLI.isCLIName("claudeship-cli"), true, "cli name: the bundle copy")
-        t.expectEqual(HubCLI.isCLIName("ClaudeShip"), false, "cli name: the app itself is not the CLI (case matters)")
-        t.expectEqual(HubCLI.isCLIName("Claudeship-cli"), false, "cli name: exact match only")
-        t.expectEqual(HubCLI.bypassesHub([]), false, "cli: bare command is a session")
-        t.expectEqual(HubCLI.bypassesHub(["fix the bug", "--model", "opus"]), false, "cli: a prompt is a session")
-        t.expectEqual(HubCLI.bypassesHub(["--resume", "abc"]), false, "cli: resume is a session")
-        t.expectEqual(HubCLI.bypassesHub(["-p", "hi"]), true, "cli: print mode goes straight to claude")
-        t.expectEqual(HubCLI.bypassesHub(["--version"]), true, "cli: version goes straight to claude")
-        t.expectEqual(HubCLI.bypassesHub(["mcp", "list"]), true, "cli: a management subcommand goes straight to claude")
-        t.expectEqual(HubCLI.bypassesHub(["--bg", "do it"]), true, "cli: claude's own background sessions aren't ours")
-        t.expectEqual(HubCLI.bypassesHub(["update the docs"]), false, "cli: a prompt that starts like a subcommand")
-        t.expectEqual(HubCLI.resumedSessionId(in: ["--resume", "93fb531a-9e91-4926-ab89-93ded70cba7e"]), "93fb531a-9e91-4926-ab89-93ded70cba7e", "cli: --resume id")
-        t.expectEqual(HubCLI.resumedSessionId(in: ["-r", "93fb531a-9e91-4926-ab89-93ded70cba7e", "--model", "opus"]), "93fb531a-9e91-4926-ab89-93ded70cba7e", "cli: -r id")
-        t.expectEqual(HubCLI.resumedSessionId(in: ["--resume=93fb531a-9e91-4926-ab89-93ded70cba7e"]), "93fb531a-9e91-4926-ab89-93ded70cba7e", "cli: --resume=id")
-        t.expectNil(HubCLI.resumedSessionId(in: ["--resume"]), "cli: --resume with no id (claude's picker) is not a resume of one")
-        t.expectNil(HubCLI.resumedSessionId(in: ["--resume", "latest"]), "cli: --resume of a non-uuid")
-        t.expectNil(HubCLI.resumedSessionId(in: ["fix", "the", "bug"]), "cli: no resume")
-
-        t.expectEqual(Hub.loginShellArgv(shell: "/bin/zsh", program: "claude", args: ["--resume", "x y"]),
-                      ["/bin/zsh", "-l", "-i", "-c", "exec \"$0\" \"$@\"", "claude", "--resume", "x y"], "web launch: POSIX shell argv")
-        t.expectEqual(Hub.loginShellArgv(shell: "/opt/homebrew/bin/fish", program: "claude", args: ["--permission-mode", "plan"]),
-                      ["/opt/homebrew/bin/fish", "-l", "-i", "-c", "exec $argv", "claude", "--permission-mode", "plan"], "web launch: fish argv")
-
-        // MARK: hub — replay buffer
-
-        var replay = ReplayBuffer(capacity: 100_000)
-        var setModes = TerminalModes()
-        setModes.dec[2004] = true
-        replay.append(Data(repeating: 0x61, count: 40_000), modesAfter: setModes)
-        replay.append(Data(repeating: 0x62, count: 40_000), modesAfter: setModes)
-        t.expectEqual(replay.snapshot().count, 80_000, "replay: under capacity keeps everything, no preamble")
-        replay.append(Data(repeating: 0x63, count: 40_000), modesAfter: setModes)
-        let trimmed = replay.snapshot()
-        t.expectEqual(trimmed.count < 100_100, true, "replay: over capacity drops from the front")
-        t.expectEqual(String(decoding: trimmed.prefix(8), as: UTF8.self), "\(esc)[?2004h", "replay: trimmed replay opens by restoring modes")
-        t.expectEqual(trimmed.last, 0x63, "replay: newest output survives")
-        replay.reset(base: TerminalModes())
-        replay.append(Data("x".utf8), modesAfter: TerminalModes())
-        t.expectEqual(String(decoding: replay.snapshot(), as: UTF8.self), "\(esc)[H\(esc)[2J\(esc)[3Jx", "replay: reset starts from a cleared screen")
-
-        // MARK: hub — config
-
-        let parsedConfig = HubConfig.parse(Data(#"{"port": 9000, "defaultPermissionMode": "plan", "root": "/tmp/projects"}"#.utf8))
-        t.expectEqual(parsedConfig.port, 9000, "config: port")
-        t.expectEqual(parsedConfig.defaultPermissionMode, "plan", "config: permission mode")
-        t.expectEqual(parsedConfig.root, "/tmp/projects", "config: root")
-        let sloppyConfig = HubConfig.parse(Data(#"{"port": 99999, "defaultPermissionMode": "yolo"}"#.utf8))
-        t.expectEqual(sloppyConfig.port, HubConfig.fallback.port, "config: out-of-range port falls back")
-        t.expectEqual(sloppyConfig.defaultPermissionMode, "auto", "config: unknown mode falls back to auto")
-        t.expectEqual(HubConfig.parse(Data("not json".utf8)), HubConfig.fallback, "config: garbage falls back whole")
-        t.expectEqual(parsedConfig.allowedHosts, [], "config: no extra host names by default")
-        t.expectEqual(HubConfig.parse(Data(#"{"allowedHosts": ["Mac.Tail1.ts.net", ""]}"#.utf8)).allowedHosts, ["mac.tail1.ts.net"], "config: extra host names lowercased")
-
-        // MARK: hub — directory model
-
-        let day = Date(timeIntervalSince1970: 1_000_000)
-        let ordered = HubState.order([
-            ("idle-old", 0, day.addingTimeInterval(-9000)),
-            ("one-b", 1, day),
-            ("never", 0, nil),
-            ("two", 2, day.addingTimeInterval(-500)),
-            ("idle-new", 0, day.addingTimeInterval(-10)),
-            ("one-a", 1, day.addingTimeInterval(-900)),
-            ("also-never", 0, nil),
-        ])
-        t.expectEqual(ordered, [3, 5, 1, 4, 0, 6, 2], "order: running by count then name, idle by recency, unused last by name")
-
-        let projectPaths = ["/code/app", "/code/app-two", "/code/lib"]
-        t.expectEqual(HubState.projectIndex(forCwd: "/code/app", paths: projectPaths), 0, "project: exact directory")
-        t.expectEqual(HubState.projectIndex(forCwd: "/code/app/.claude/worktrees/x", paths: projectPaths), 0, "project: a worktree inside it")
-        t.expectEqual(HubState.projectIndex(forCwd: "/code/app-two/src", paths: projectPaths), 1, "project: a sibling sharing a name prefix")
-        t.expectNil(HubState.projectIndex(forCwd: "/elsewhere", paths: projectPaths), "project: outside the root")
-        t.expectEqual(HubState.branch(fromHEAD: "ref: refs/heads/feature/x\n"), "feature/x", "branch: symbolic ref")
-        t.expectEqual(HubState.branch(fromHEAD: "9dfe4f7a1b2c3d4e5f60718293a4b5c6d7e8f901\n"), "9dfe4f7", "branch: detached head")
-        t.expectNil(HubState.branch(fromHEAD: "gitdir: ../x"), "branch: not a HEAD file")
-        let tmpRoot = NSTemporaryDirectory() + "claudeship-selftest-\(getpid())"
-        try? FileManager.default.createDirectory(atPath: tmpRoot + "/proj/inner", withIntermediateDirectories: true)
-        try? FileManager.default.createDirectory(atPath: tmpRoot + "/.hidden", withIntermediateDirectories: true)
-        let canonicalRoot = URL(fileURLWithPath: tmpRoot).standardizedFileURL.path
-        t.expectEqual(HubState.launchTarget(tmpRoot + "/proj", root: tmpRoot), canonicalRoot + "/proj", "launch: a project directory")
-        t.expectEqual(HubState.launchTarget(tmpRoot + "/proj/../proj/", root: tmpRoot), canonicalRoot + "/proj", "launch: path is normalized")
-        t.expectNil(HubState.launchTarget(tmpRoot + "/proj/inner", root: tmpRoot), "launch: not a nested directory")
-        t.expectEqual(HubState.launchTarget(tmpRoot, root: tmpRoot + "/proj", home: tmpRoot), canonicalRoot, "launch: the home directory itself")
-        t.expectNil(HubState.launchTarget(tmpRoot + "/proj", root: tmpRoot + "/other", home: tmpRoot + "/x"), "launch: home does not open its children")
-        t.expectNil(HubState.launchTarget(tmpRoot + "/proj/../..", root: tmpRoot), "launch: not above the root")
-        t.expectNil(HubState.launchTarget(tmpRoot, root: tmpRoot), "launch: not the root itself")
-        t.expectNil(HubState.launchTarget(tmpRoot + "/.hidden", root: tmpRoot), "launch: not a hidden directory")
-        t.expectNil(HubState.launchTarget(tmpRoot + "/missing", root: tmpRoot), "launch: must exist")
-        try? FileManager.default.removeItem(atPath: tmpRoot)
-        t.expectEqual(HubState.isSessionId("93fb531a-9e91-4926-ab89-93ded70cba7e"), true, "resume: a uuid")
-        t.expectEqual(HubState.isSessionId("x; rm -rf ~"), false, "resume: anything else refused")
-        t.expectEqual(Hub.clampSize(rows: 40, cols: 120).map { [$0.rows, $0.cols] }, [40, 120], "size: sane size accepted")
-        t.expectNil(Hub.clampSize(rows: 0, cols: 0), "size: empty size refused")
-        t.expectNil(Hub.clampSize(rows: 70000, cols: 80), "size: absurd size refused")
-        let webEnv = Hub.webEnvironment(shell: "/bin/zsh", base: ["HOME": "/Users/x", "PATH": "/bin", "CLAUDECODE": "1", "SECRET": "s"])
-        t.expectEqual(webEnv["HOME"], "/Users/x", "env: home carried over")
-        t.expectNil(webEnv["CLAUDECODE"], "env: the hub's own session markers are not inherited")
-        t.expectNil(webEnv["SECRET"], "env: unlisted variables are not inherited")
-        t.expectEqual(webEnv["TERM"], "xterm-256color", "env: terminal type set for the browser terminal")
-
-        // MARK: hub — web: HTTP
-
-        let getRequest = "GET /ws/term?id=ab12cd&rows=40&cols=120 HTTP/1.1\r\nHost: 100.101.102.103:7433\r\nUpgrade: websocket\r\n\r\n"
-        if case .request(let parsed, let consumed) = HubHTTP.parse(Data((getRequest + "extra").utf8)) {
-            t.expectEqual(consumed, getRequest.utf8.count, "http: reports where the request ends")
-            t.expectEqual(parsed.method, "GET", "http: method")
-            t.expectEqual(parsed.path, "/ws/term", "http: path without query")
-            t.expectEqual(parsed.query, ["id": "ab12cd", "rows": "40", "cols": "120"], "http: query")
-            t.expectEqual(parsed.headers["host"], "100.101.102.103:7433", "http: header names lowercased")
-        } else {
-            t.expectEqual(true, false, "http: GET parses")
-        }
-        let postHead = "POST /api/launch HTTP/1.1\r\nHost: localhost:7433\r\nContent-Length: 13\r\n\r\n"
-        t.expectEqual(HubHTTP.parse(Data((postHead + "{\"path\"").utf8)), .incomplete, "http: waits for the whole body")
-        if case .request(let parsed, let consumed) = HubHTTP.parse(Data((postHead + "{\"path\":\"/x\"}").utf8)) {
-            t.expectEqual(consumed, postHead.utf8.count + 13, "http: consumed covers the body")
-            t.expectEqual(String(decoding: parsed.body, as: UTF8.self), "{\"path\":\"/x\"}", "http: body")
-        } else {
-            t.expectEqual(true, false, "http: POST parses")
-        }
-        t.expectEqual(HubHTTP.parse(Data("GET /".utf8)), .incomplete, "http: partial head")
-        t.expectEqual(HubHTTP.parse(Data("NONSENSE\r\n\r\n".utf8)), .invalid, "http: malformed request line")
-        t.expectEqual(HubHTTP.parse(Data("POST / HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n".utf8)), .invalid, "http: oversized body refused")
-
-        // MARK: hub — web: who may connect
-
-        let ts: [UInt8] = [100, 101, 102, 103]
-        let tunnel: [[UInt8]] = [ts, HubWebSecurity.addressBytes("fd7a:115c:a1e0::1")!]
-        func pair(_ local: String, _ remote: String) -> Bool {
-            HubWebSecurity.isAllowedPair(local: HubWebSecurity.addressBytes(local)!,
-                                         remote: HubWebSecurity.addressBytes(remote)!, tunnel: tunnel)
-        }
-        t.expectEqual(pair("127.0.0.1", "127.0.0.1"), true, "gate: loopback to loopback")
-        t.expectEqual(pair("::1", "::1"), true, "gate: IPv6 loopback")
-        t.expectEqual(pair("100.101.102.103", "100.64.0.9"), true, "gate: tailnet peer on our tunnel address")
-        t.expectEqual(pair("::ffff:100.101.102.103", "::ffff:100.127.255.254"), true, "gate: IPv4-mapped tailnet pair")
-        t.expectEqual(pair("fd7a:115c:a1e0::1", "fd7a:115c:a1e0::beef"), true, "gate: tailnet IPv6 pair")
-        t.expectEqual(pair("100.70.1.1", "100.70.1.2"), false, "gate: CGNAT range on a non-tunnel interface refused")
-        t.expectEqual(pair("192.168.1.20", "192.168.1.30"), false, "gate: LAN refused")
-        t.expectEqual(pair("100.101.102.103", "192.168.1.30"), false, "gate: non-tailnet peer refused")
-        t.expectEqual(pair("100.101.102.103", "100.128.0.1"), false, "gate: peer just past the tailnet range refused")
-        t.expectEqual(pair("100.101.102.103", "100.63.255.255"), false, "gate: peer just before the tailnet range refused")
-        t.expectEqual(pair("127.0.0.1", "100.64.0.9"), false, "gate: loopback only talks to loopback")
-        t.expectEqual(pair("fe80::1", "fe80::2"), false, "gate: link-local refused")
-        t.expectEqual(HubWebSecurity.isAllowedPair(local: ts, remote: [100, 64, 0, 9], tunnel: []), false, "gate: no tunnel, no tailnet access")
-
-        t.expectEqual(HubWebSecurity.isAllowedHost("localhost:7433"), true, "host: localhost")
-        t.expectEqual(HubWebSecurity.isAllowedHost("127.0.0.1:7433"), true, "host: loopback literal")
-        t.expectEqual(HubWebSecurity.isAllowedHost("100.101.102.103:7433"), true, "host: tailnet literal")
-        t.expectEqual(HubWebSecurity.isAllowedHost("[fd7a:115c:a1e0::1]:7433"), true, "host: tailnet IPv6 literal")
-        t.expectEqual(HubWebSecurity.isAllowedHost("[::1]:7433"), true, "host: IPv6 loopback literal")
-        t.expectEqual(HubWebSecurity.isAllowedHost("my-mac:7433"), false, "host: a bare name is whatever DNS says it is")
-        t.expectEqual(HubWebSecurity.isAllowedHost("mac.tail1234.ts.net"), false, "host: so is a tailnet name, over plain HTTP")
-        t.expectEqual(HubWebSecurity.isAllowedHost("Mac.Tail1234.ts.net:443", extra: ["mac.tail1234.ts.net"]), true, "host: unless the config vouches for it")
-        t.expectEqual(HubWebSecurity.isAllowedHost("evil.example.com:7433"), false, "host: rebinding domain refused")
-        t.expectEqual(HubWebSecurity.isAllowedHost("192.168.1.20:7433"), false, "host: LAN literal refused")
-        t.expectEqual(HubWebSecurity.isAllowedHost("localhost.evil.com"), false, "host: lookalike refused")
-        t.expectEqual(HubWebSecurity.isAllowedHost(""), false, "host: empty refused")
-        t.expectEqual(HubWebSecurity.isAllowedHost("localhost:1; script-src *"), false, "host: only digits may follow the colon")
-        t.expectEqual(HubWebSecurity.isAllowedHost("[::1]x:7433"), false, "host: nothing between the bracket and the port")
-        t.expectEqual(HubWebSecurity.isAllowedHost("[::1]"), true, "host: bracketed literal without a port")
-        t.expectEqual(HubWebSecurity.isAllowedHost("localhost:"), true, "host: empty port")
-        t.expectEqual(HubWebSecurity.isAllowedHost("127.0.0.1:123456"), false, "host: overlong port")
-
-        t.expectEqual(HubWebSecurity.cookie(named: "claude_ship", in: "a=1; claude_ship=abc123; b=2"), "abc123", "cookie: found among others")
-        t.expectNil(HubWebSecurity.cookie(named: "claude_ship", in: "xclaude_ship=abc; other=1"), "cookie: name must match whole")
-        t.expectNil(HubWebSecurity.cookie(named: "claude_ship", in: nil), "cookie: no header")
-        t.expectEqual(HubWebSecurity.constantTimeEquals("abcdef", "abcdef"), true, "token: equal")
-        t.expectEqual(HubWebSecurity.constantTimeEquals("abcdef", "abcdeg"), false, "token: differs")
-        t.expectEqual(HubWebSecurity.constantTimeEquals("abcdef", "abcde"), false, "token: prefix is not equal")
-        t.expectEqual(HubWebSecurity.constantTimeEquals("", "abc"), false, "token: empty is not equal")
-
-        t.expectEqual(HubWebSecurity.isSameOrigin(origin: nil, host: "localhost:7433"), true, "origin: absent (not a browser)")
-        t.expectEqual(HubWebSecurity.isSameOrigin(origin: "http://localhost:7433", host: "localhost:7433"), true, "origin: our own page")
-        t.expectEqual(HubWebSecurity.isSameOrigin(origin: "http://[fd7a:115c:a1e0::1]:7433", host: "[fd7a:115c:a1e0::1]:7433"), true, "origin: IPv6 page")
-        t.expectEqual(HubWebSecurity.isSameOrigin(origin: "http://evil.example.com", host: "localhost:7433"), false, "origin: another site")
-        t.expectEqual(HubWebSecurity.isSameOrigin(origin: "http://localhost:9999", host: "localhost:7433"), false, "origin: another port")
-        t.expectEqual(HubWebSecurity.isSameOrigin(origin: "null", host: "localhost:7433"), false, "origin: opaque origin")
-
-        // MARK: hub — web: WebSocket
-
-        t.expectEqual(WebSocketCodec.acceptKey("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "ws: accept key (RFC 6455 example)")
-        t.expectEqual(WebSocketCodec.encode(opcode: 2, payload: Data([1, 2, 3])), Data([0x82, 3, 1, 2, 3]), "ws: short server frame")
-        t.expectEqual(WebSocketCodec.encode(opcode: 2, payload: Data(count: 300)).prefix(4), Data([0x82, 126, 0x01, 0x2c]), "ws: 16-bit length")
-        t.expectEqual(WebSocketCodec.encode(opcode: 2, payload: Data(count: 70_000)).prefix(10),
-                      Data([0x82, 127, 0, 0, 0, 0, 0, 0x01, 0x11, 0x70]), "ws: 64-bit length")
-        func clientFrame(_ first: UInt8, _ payload: [UInt8], mask: [UInt8] = [0x37, 0xfa, 0x21, 0x3d]) -> Data {
-            var frame = Data([first])
-            if payload.count < 126 {
-                frame.append(0x80 | UInt8(payload.count))
-            } else {
-                frame.append(contentsOf: [0x80 | 126, UInt8(payload.count >> 8), UInt8(payload.count & 0xff)])
-            }
-            frame.append(contentsOf: mask)
-            frame.append(contentsOf: payload.enumerated().map { $1 ^ mask[$0 & 3] })
-            return frame
-        }
-        var wsParser = WebSocketParser()
-        // RFC 6455 §5.7: masked text frame "Hello".
-        t.expectEqual(wsParser.feed(Data([0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58])),
-                      [WebSocketParser.Message(opcode: 1, payload: Data("Hello".utf8))], "ws: masked text frame")
-        let bigPayload = [UInt8](repeating: 0x41, count: 500)
-        let bigFrame = clientFrame(0x82, bigPayload)
-        t.expectEqual(wsParser.feed(Data(bigFrame.prefix(100))), [], "ws: partial frame waits")
-        t.expectEqual(wsParser.feed(Data(bigFrame.dropFirst(100))),
-                      [WebSocketParser.Message(opcode: 2, payload: Data(bigPayload))], "ws: 16-bit length frame across reads")
-        let fragments = clientFrame(0x02, [1, 2]) + clientFrame(0x89, [9]) + clientFrame(0x80, [3])
-        t.expectEqual(wsParser.feed(fragments), [
-            WebSocketParser.Message(opcode: 9, payload: Data([9])),
-            WebSocketParser.Message(opcode: 2, payload: Data([1, 2, 3])),
-        ], "ws: fragments join, a ping may interleave")
-        var unmaskedParser = WebSocketParser()
-        t.expectEqual(unmaskedParser.feed(Data([0x81, 0x01, 0x41])) == nil, true, "ws: unmasked client frame is a protocol error")
-        var strayParser = WebSocketParser()
-        t.expectEqual(strayParser.feed(clientFrame(0x80, [1])) == nil, true, "ws: continuation with nothing to continue")
+        t.expectEqual(ClaudeShipMain.legacyFlagExitCode(["ClaudeShip", "--permission-hook"]), 0,
+                      "legacy: a leftover hook entry exits 0 (exit 2 would deny every prompt)")
+        t.expectEqual(ClaudeShipMain.legacyFlagExitCode(["ClaudeShip", "--install-hook"]), 2, "legacy: install-hook points elsewhere")
+        t.expectEqual(ClaudeShipMain.legacyFlagExitCode(["ClaudeShip", "--uninstall-hook"]), 2, "legacy: uninstall-hook points elsewhere")
+        t.expectNil(ClaudeShipMain.legacyFlagExitCode(["ClaudeShip", "--scan"]), "legacy: other flags untouched")
 
         t.finish()
     }

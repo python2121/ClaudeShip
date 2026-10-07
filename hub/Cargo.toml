@@ -1,0 +1,33 @@
+[package]
+name = "claudeship"
+version = "0.1.0"
+edition.workspace = true
+description = "ClaudeShip session hub: owns Claude Code ptys, serves the web app, and is the `claudeship` command"
+
+[[bin]]
+name = "claudeship"
+path = "src/main.rs"
+
+# A stand-in for `claude` that the integration tests run through a private
+# hub (CLAUDESHIP_CMD). Not part of an install.
+[[bin]]
+name = "claudeship-stand-in"
+path = "tests/bin/stand-in.rs"
+test = false
+doc = false
+
+[dependencies]
+claude-sessions = { path = "../claude-sessions" }
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "signal", "time", "sync", "macros"] }
+qrcode = { version = "0.14", default-features = false }
+axum = { version = "0.8", default-features = false, features = ["ws", "json", "query", "tokio", "http1"] }
+hyper = { version = "1", features = ["server", "http1"] }
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+include_dir = "0.7"
+getrandom = "0.3"
+socket2 = { version = "0.6", features = ["all"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "http1", "service"] }

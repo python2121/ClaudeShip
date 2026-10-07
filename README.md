@@ -12,6 +12,7 @@ Everything stays on your Mac. The only thing on the network is the hub, and it a
 | **`claudeship`** | Run Claude through the hub: `claudeship` in a project folder does exactly what `claude` does, but the session lives in the hub, outlives the window, and can be attached to from anywhere. |
 | **Web app** | A directory of your projects with live sessions and conversation summaries; launch, resume, and attach to a terminal in the browser — full screen, or several at once in floating windows over the directory — on the Mac or on a phone over Tailscale. |
 | **iPhone app** (`ios/`) | The same, native: SwiftUI directory, SwiftTerm terminal with a key bar, native scrolling, and a zoomed-out mirror of whatever screen currently owns a session. |
+| **Linux tray applet** (`linux/`) | The menu bar app's counterpart for KDE Plasma (PySide6): the same glyph and session list, grouped Virtual / Background / Terminal only, with Approve/Deny, End session, and click-to-attach in Konsole. A pure hub client. See [docs/linux.md](docs/linux.md). |
 
 ## Menu bar
 
@@ -40,7 +41,7 @@ claudeship hub stop           # stop the hub (ends its sessions); it restarts on
 
 Closing a `claudeship` window only detaches: the session keeps running and shows in the web app, the phone, and the menu bar. Any number of screens can look at one session; the one you last used sets its size, the others follow.
 
-The hub starts on first use and keeps running until you log out or stop it. It is never restarted by `install.sh`, so it keeps its sessions across installs; restart it with `claudeship hub stop` when its sessions can end.
+The hub runs as a login service (`claudeship hub install-service`, which `install.sh` runs) and otherwise starts on first use. It is never restarted by `install.sh`, so it keeps its sessions across installs; restart it with `claudeship hub stop` when its sessions can end (under the login service, launchd starts the new build).
 
 ## Web app
 
@@ -64,9 +65,22 @@ The phone takes the session's size whenever you look at it, and when another scr
 ./install.sh
 ```
 
-Builds a release bundle, installs `/Applications/ClaudeShip.app`, links `~/.local/bin/claudeship`, starts the hub, registers the permission hook, and installs the VS Code bridge extension (`SKIP_HOOK=1`, `SKIP_VSCODE_EXT=1`, `SKIP_HUB=1` opt out of each). Upgrading from the app's former name (ClaudeStatus) is handled automatically: its settings and the hub's pairing move with it.
+Needs Swift (the Command Line Tools are enough) and Rust (`cargo`, from [rustup.rs](https://rustup.rs)). Builds the menubar app and installs `/Applications/ClaudeShip.app`; builds the hub (`cargo build --release -p claudeship`) and installs it as `~/.local/bin/claudeship`; installs the hub's login service (`claudeship hub install-service`), registers the permission hook (`claudeship hub install-hook`), and installs the VS Code bridge extension (`SKIP_HUB=1`, `SKIP_HOOK=1`, `SKIP_VSCODE_EXT=1` opt out of each). A running hub is never restarted by an install.
+
+**Coming from the Swift hub** (before the Rust one): stop the old hub by hand before the first install, when its sessions can end — `claudeship hub stop` while `~/.local/bin/claudeship` still points into the old bundle.
 
 Code signing is best-effort: set `SIGN_IDENTITY` in a `.env` file for a stable identity (keeps macOS from re-asking for Automation permission after every rebuild); otherwise ad-hoc. Set `BUNDLE_ID` there too (default `com.example.claudeship`); changing it on an installed app resets its settings.
+
+## Linux
+
+The hub runs on Linux too (a systemd user service), and a KDE Plasma tray applet mirrors the menu bar app.
+
+```bash
+./linux/scripts/install-hub.sh      # cargo build, ~/.local/bin/claudeship, systemd user unit, prints the pairing link
+cd linux && ./scripts/setup.sh && ./scripts/install-linux.sh --autostart   # the tray applet
+```
+
+Pair a browser or the phone with `claudeship hub link` (use the box's tailnet address). The applet is described in [docs/linux.md](docs/linux.md).
 
 ## Development
 
@@ -75,10 +89,10 @@ Code signing is best-effort: set `SIGN_IDENTITY` in a `.env` file for a stable i
 swift run                          # dev loop (menubar app, unsigned)
 swift run ClaudeShip --self-test   # the test suite
 swift run ClaudeShip --scan        # headless: print detected sessions
-swift run ClaudeShip --cli hub status   # the claudeship command, from a dev build
+cargo run -p claudeship -- hub status  # the claudeship command (hub/), from a dev build
 ```
 
-Tests are a hand-rolled assertion harness baked into the binary (`SelfTest.swift`) — no XCTest or swift-testing dependency, so the Mac app builds with a Command Line Tools-only toolchain. `CLAUDE.md` has the design notes: how the hub owns ptys, how late attachers get a correct screen, the size rules between screens, the security gate, and the page's window modes.
+Tests are a hand-rolled assertion harness baked into the binary (`SelfTest.swift`) — no XCTest or swift-testing dependency, so the Mac app builds with a Command Line Tools-only toolchain. The hub (Rust) has its own `cargo test`. `CLAUDE.md` has the menubar app's design notes; `docs/hub.md` the hub's: how it owns ptys, how late attachers get a correct screen, the size rules between screens, and the security gate.
 
 The icon — a starship in Claude's colour with the Claude mark's burst as its exhaust — is one drawing, `web/icon.svg`, rendered for every surface by `ios/make-icon.swift` and `make-mac-icon.sh`.
 

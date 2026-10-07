@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Waiting on the user: the same solid dot, tinted orange by the applet.
+       Same shape as busy on purpose — the Mac tells them apart by colour. -->
+  <circle cx="8" cy="8" r="5.5" fill="#000"/>
+</svg>

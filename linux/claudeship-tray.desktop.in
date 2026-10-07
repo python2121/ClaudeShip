@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ClaudeShip
+Comment=Claude Code sessions on the ClaudeShip hub, in the system tray
+Exec=@ROOT@/bin/claudeship-tray
+Icon=@ROOT@/shiptray/assets/icon128.png
+Terminal=false
+Categories=Development;Qt;
+StartupNotify=false
+X-GNOME-UsesNotifications=true

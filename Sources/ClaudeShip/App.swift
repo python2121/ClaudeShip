@@ -7,33 +7,11 @@ struct ClaudeShipMain {
     private static let appDelegate = AppDelegate()
 
     static func main() {
-        // The session hub and its terminal client share this binary. The
-        // installed copy is invoked as `claudeship`, where every argument
-        // belongs to claude — so this dispatch comes before any flag
-        // checks. A dev build reaches the same code with `--cli`.
-        let arguments = CommandLine.arguments
-        if let invokedAs = arguments.first, HubCLI.isCLIName((invokedAs as NSString).lastPathComponent) {
-            HubCLI.run(Array(arguments.dropFirst()))
-        }
-        if arguments.count > 1, arguments[1] == "--cli" {
-            HubCLI.run(Array(arguments.dropFirst(2)))
-        }
-
-        // Hook helper mode: Claude Code's PermissionRequest hook pipes the
-        // request in on stdin; we relay it to the running app and print a
-        // verdict (or nothing — silence hands the prompt back to the
-        // terminal). Dispatched first: it must never touch the GUI, the
-        // single-instance lock, or block on anything but its own deadline.
-        if CommandLine.arguments.contains("--permission-hook") {
-            PermissionHook.run()
-        }
-
-        // Register / remove the PermissionRequest hook in ~/.claude/settings.json.
-        if CommandLine.arguments.contains("--install-hook") {
-            runHookInstaller(install: true)
-        }
-        if CommandLine.arguments.contains("--uninstall-hook") {
-            runHookInstaller(install: false)
+        // The hook helper and the hub moved to the Rust `claudeship`
+        // binary (hub/). Point anyone still calling the old flags there.
+        if let code = legacyFlagExitCode(CommandLine.arguments) {
+            FileHandle.standardError.write(Data("ClaudeShip: the PermissionRequest hook now belongs to the hub; run `claudeship hub install-hook`.\n".utf8))
+            exit(code)
         }
 
         // Headless self-test mode: run the hand-rolled assertion suite and
@@ -117,17 +95,15 @@ struct ClaudeShipMain {
         app.run()
     }
 
-    private static func runHookInstaller(install: Bool) -> Never {
-        do {
-            let changed = install ? try HookInstaller.install() : try HookInstaller.uninstall()
-            let verb = install ? "installed in" : "removed from"
-            print(changed
-                ? "PermissionRequest hook \(verb) \(HookInstaller.settingsPath)"
-                : "Nothing to do — hook \(install ? "already present" : "not present") in \(HookInstaller.settingsPath)")
-            exit(0)
-        } catch {
-            FileHandle.standardError.write(Data("hook \(install ? "install" : "uninstall") failed: \(error.localizedDescription)\n".utf8))
-            exit(1)
-        }
+    /// The exit code for a flag that moved to the hub, nil for anything else.
+    /// `--permission-hook` exits 0: an old settings.json entry may still run
+    /// it (until `claudeship hub install-hook` replaces it, or for good with
+    /// SKIP_HOOK=1), and Claude Code reads a PermissionRequest hook's exit 2
+    /// as a deny — silence with 0 is "no decision", the terminal prompt
+    /// stays the answer. The installer flags are typed by people: exit 2.
+    static func legacyFlagExitCode(_ arguments: [String]) -> Int32? {
+        if arguments.contains("--permission-hook") { return 0 }
+        if arguments.contains("--install-hook") || arguments.contains("--uninstall-hook") { return 2 }
+        return nil
     }
 }

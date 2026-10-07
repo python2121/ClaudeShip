@@ -1,17 +1,16 @@
 import Foundation
 
-/// Where the hub is and how to prove we're paired with it. The address is
-/// plain settings; the token lives in the Keychain. Requests carry the
-/// token as the same cookie a paired browser would send, so the hub treats
-/// the phone exactly like the web app.
+/// How to reach one paired hub and prove we're paired with it. Requests
+/// carry the token as the same cookie a paired browser would send, so the
+/// hub treats the phone exactly like the web app. Persistence (the list of
+/// hubs, the Keychain items) is `HubRegistry`'s business.
 @Observable
 final class HubConnection {
     static let cookieName = "claude_ship"
-    private static let urlKey = "hubURL"
-    private static let tokenAccount = "token"
 
-    private(set) var baseURL: URL?
-    private(set) var token: String?
+    let baseURL: URL
+    /// Replaced in place when the same hub is paired again (a rotated secret).
+    var token: String?
 
     /// No cookie jar: the token is attached by hand, and a Set-Cookie from
     /// the hub must not end up stored twice.
@@ -24,20 +23,22 @@ final class HubConnection {
         return URLSession(configuration: config)
     }()
 
-    init() {
-        if let text = UserDefaults.standard.string(forKey: Self.urlKey) { baseURL = URL(string: text) }
-        token = Keychain.string(for: Self.tokenAccount)
+    init(baseURL: URL, token: String?) {
+        self.baseURL = baseURL
+        self.token = token
     }
 
-    var isPaired: Bool { baseURL != nil && token != nil }
+    var isPaired: Bool { token != nil }
 
     /// The host as a person would say it ("100.101.102.103:7433").
-    var displayAddress: String {
-        guard let url = baseURL, let host = url.host else { return "" }
+    var displayAddress: String { Self.displayAddress(baseURL) }
+
+    static func displayAddress(_ url: URL) -> String {
+        guard let host = url.host else { return url.absoluteString }
         return url.port.map { "\(host):\($0)" } ?? host
     }
 
-    /// The pairing link from `claudeship hub link`, or the bare token.
+    /// The pairing link from `claudeship hub link`.
     /// Returns the hub's base URL and the token.
     static func parse(link: String) -> (URL, String)? {
         let text = link.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -57,20 +58,8 @@ final class HubConnection {
         text.count == 64 && text.allSatisfy { $0.isHexDigit && ($0.isNumber || $0.isLowercase) }
     }
 
-    func pair(base: URL, token: String) {
-        baseURL = base
-        self.token = token
-        UserDefaults.standard.set(base.absoluteString, forKey: Self.urlKey)
-        Keychain.set(token, for: Self.tokenAccount)
-    }
-
-    func unpair() {
-        token = nil
-        Keychain.delete(Self.tokenAccount)
-    }
-
     func request(_ path: String, method: String = "GET", json: [String: Any]? = nil) -> URLRequest? {
-        guard let base = baseURL, let url = URL(string: path, relativeTo: base) else { return nil }
+        guard let url = URL(string: path, relativeTo: baseURL) else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -85,8 +74,8 @@ final class HubConnection {
     /// The terminal WebSocket for a session. `claim` says whether opening
     /// it should size the session for this screen.
     func terminalRequest(hubId: String, cols: Int, rows: Int, claim: Bool) -> URLRequest? {
-        guard let base = baseURL, var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
-        components.scheme = base.scheme == "https" ? "wss" : "ws"
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else { return nil }
+        components.scheme = baseURL.scheme == "https" ? "wss" : "ws"
         components.path = "/ws/term"
         components.queryItems = [
             URLQueryItem(name: "id", value: hubId),

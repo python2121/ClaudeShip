@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # Build (unless SKIP_BUILD=1), stop any running instance, replace the bundle
 # in /Applications, and restart. Idempotent — safe to re-run after every code
-# change.
+# change. Also builds the session hub (the Rust `claudeship` binary in hub/,
+# needs cargo), installs it as ~/.local/bin/claudeship, registers the
+# PermissionRequest hook through it, and installs the hub's login service.
+#
+# First run after the move to the Rust hub: the old Swift hub (the bundle's
+# `claudeship-cli`) is still running and holds the socket, the port, and the
+# lock. Stop it by hand first, with the *old* binary, when its sessions are
+# done — this script never stops a running hub:
+#   ~/.local/bin/claudeship hub stop      (still the symlink into the old bundle)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -22,27 +30,19 @@ LABEL="${BUNDLE_ID:-com.example.claudeship}"
 PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 UID_NUM="$(id -u)"
 
-if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  ./build-app.sh
+if [[ "${SKIP_HUB:-0}" != "1" ]] && ! command -v cargo >/dev/null 2>&1; then
+  echo "ERROR: cargo not found — the session hub is Rust (hub/). Install it from https://rustup.rs," >&2
+  echo "       or run with SKIP_HUB=1 SKIP_HOOK=1 to install the menubar app alone." >&2
+  exit 1
 fi
 
-# One-time move from the app's former name (ClaudeStatus): its settings,
-# the hub's socket/token/config, and the VS Code bridge files all live in
-# the Application Support folder, which simply moves. A hub that is still
-# running keeps answering at the moved socket path, so its sessions
-# survive; new sessions need it restarted (noted at the end).
-OLD_SUPPORT="${HOME}/Library/Application Support/ClaudeStatus"
-NEW_SUPPORT="${HOME}/Library/Application Support/${APP_NAME}"
-if [[ -d "${OLD_SUPPORT}" && ! -d "${NEW_SUPPORT}" ]]; then
-  echo "==> moving Application Support/ClaudeStatus → ${APP_NAME}"
-  mv "${OLD_SUPPORT}" "${NEW_SUPPORT}"
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  ./build-app.sh
+  if [[ "${SKIP_HUB:-0}" != "1" ]]; then
+    echo "==> cargo build --release -p claudeship"
+    cargo build --release -p claudeship
+  fi
 fi
-if pgrep -x ClaudeStatus >/dev/null 2>&1; then
-  echo "==> stopping the old ClaudeStatus menubar app"
-  pkill -x ClaudeStatus || true
-  sleep 0.5
-fi
-rm -rf "/Applications/ClaudeStatus.app"
 
 if [[ ! -d "${APP_BUNDLE}" ]]; then
   echo "ERROR: ${APP_BUNDLE} not built — run ./build-app.sh first" >&2
@@ -57,8 +57,8 @@ if launchctl print "gui/${UID_NUM}/${LABEL}" >/dev/null 2>&1; then
 fi
 
 # Belt-and-braces — covers manually-launched instances not under launchd.
-# Matched by the app's exact command line, never by process name: the hub
-# is the same binary under another name and must survive an install.
+# Matched by the app's exact command line, never by process name (a
+# leftover Swift hub ran as the bundle's binary under another name).
 APP_CMD="${DEST}/Contents/MacOS/${APP_NAME}"
 if pgrep -fx "${APP_CMD}" >/dev/null 2>&1; then
   echo "==> killing running ${APP_NAME}"
@@ -105,39 +105,40 @@ if [[ "${SKIP_VSCODE_EXT:-0}" != "1" ]]; then
   done
 fi
 
-# Register the PermissionRequest hook in ~/.claude/settings.json so approvals
-# can be answered from the app. Idempotent (only touches its own marked
-# entry, prints "Nothing to do" when already present). SKIP_HOOK=1 to opt
-# out; remove later with: ClaudeShip --uninstall-hook
-if [[ "${SKIP_HOOK:-0}" != "1" ]]; then
-  echo "==> registering Claude Code permission hook"
-  "${DEST}/Contents/MacOS/${APP_NAME}" --install-hook
+# The session hub: install `claudeship` (a real file, no longer a symlink
+# into the bundle) by copying to a temp name and renaming over the old one,
+# so a running hub keeps the binary it has mapped. A hub that is already
+# running is never restarted here — it owns live sessions; it keeps running
+# the previous build until `claudeship hub restart` (install-service prints
+# that hint when the running build differs). SKIP_HUB=1 opts out.
+HUB_BIN="${HOME}/.local/bin/claudeship"
+if [[ "${SKIP_HUB:-0}" != "1" ]]; then
+  BUILT_HUB="target/release/claudeship"
+  if [[ ! -x "${BUILT_HUB}" ]]; then
+    echo "ERROR: ${BUILT_HUB} not built — run: cargo build --release -p claudeship" >&2
+    exit 1
+  fi
+  mkdir -p "${HOME}/.local/bin"
+  cp "${BUILT_HUB}" "${HUB_BIN}.new.$$"
+  mv -f "${HUB_BIN}.new.$$" "${HUB_BIN}"
+  echo "==> installed ${HUB_BIN}"
+  # A LaunchAgent that runs `claudeship hub run` at login and keeps it up.
+  echo "==> installing the session hub's login service"
+  "${HUB_BIN}" hub install-service || echo "WARNING: session hub service did not install" >&2
+  echo "==> to open the web app in a browser (or on the phone): claudeship hub link"
 fi
 
-# The session hub: put `claudeship` on PATH and make sure a hub is up, so
-# the web app answers. A hub that is already running is left alone — it owns
-# live sessions, and restarting it would end them; it keeps running the
-# previous build until `claudeship hub stop`. SKIP_HUB=1 opts out.
-if [[ "${SKIP_HUB:-0}" != "1" ]]; then
-  HUB_BIN="${DEST}/Contents/MacOS/claudeship-cli"
-  mkdir -p "${HOME}/.local/bin"
-  ln -sf "${HUB_BIN}" "${HOME}/.local/bin/claudeship"
-  echo "==> linked ${HOME}/.local/bin/claudeship"
-  if "${HUB_BIN}" hub status >/dev/null 2>&1; then
-    echo "==> session hub already running (previous build until: claudeship hub stop)"
+# Register the PermissionRequest hook in ~/.claude/settings.json so approvals
+# can be answered from the overlay, the web page, and the phone (the hook
+# helper talks to the hub). Idempotent, touches only its own entry, and
+# replaces the old Swift helper's `--permission-hook` entry in the same pass.
+# SKIP_HOOK=1 to opt out.
+if [[ "${SKIP_HOOK:-0}" != "1" ]]; then
+  if [[ -x "${HUB_BIN}" ]]; then
+    echo "==> registering Claude Code permission hook"
+    "${HUB_BIN}" hub install-hook || echo "WARNING: permission hook not registered — run: claudeship hub install-hook" >&2
   else
-    echo "==> starting session hub"
-  fi
-  "${HUB_BIN}" hub start || echo "WARNING: session hub did not start" >&2
-  echo "==> to open the web app in a browser (or on the phone): claudeship hub link"
-  if ps -Ao command | grep "^/Applications/ClaudeStatus.app/.*hub run" >/dev/null; then  # not -q: pipefail + SIGPIPE
-    echo "NOTE: the running hub is the old ClaudeStatus build, whose bundle is now gone;"
-    echo "      its current sessions keep working, but new ones will fail to start until"
-    echo "      you restart it (ends those sessions): claudeship hub stop && claudeship hub start"
-  elif ps -Ao command | grep "^${APP_CMD} --cli hub run" >/dev/null; then
-    echo "NOTE: the running hub was started under the app's own name (a build where the"
-    echo "      CLI copy collided with it); it keeps working, but restart it when its"
-    echo "      sessions are done so it runs as claudeship-cli: claudeship hub stop && claudeship hub start"
+    echo "WARNING: ${HUB_BIN} missing — permission hook not registered" >&2
   fi
 fi
 

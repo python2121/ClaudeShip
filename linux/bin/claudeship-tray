@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Launcher. Works from inside the distrobox (runs the venv directly) or from
+# the host (re-enters the distrobox recorded by scripts/setup.sh).
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+in_container=""
+[ -f /run/.containerenv ] || [ -f /.dockerenv ] && in_container=1
+
+if [ -z "$in_container" ] && [ -f "$HERE/.distrobox-name" ] && command -v distrobox-enter >/dev/null 2>&1; then
+    exec distrobox-enter -n "$(cat "$HERE/.distrobox-name")" -- "$HERE/bin/claudeship-tray" "$@"
+fi
+
+export PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}"
+exec "$HERE/.venv/bin/python" -m shiptray "$@"

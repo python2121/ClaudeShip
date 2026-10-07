@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build ClaudeShip as a proper .app bundle so macOS treats it as a menubar
 # accessory app (LSUIElement). Output: ./ClaudeShip.app
+# The menubar app only: the session hub and the `claudeship` command are the
+# Rust binary in hub/, which install.sh builds and installs on its own.
 set -euo pipefail
 
 CONFIG="${CONFIG:-release}"
@@ -43,17 +45,6 @@ mkdir -p "${APP_DIR}/Contents/Resources"
 
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
-# The session hub and its terminal client are the same binary under another
-# name (App.main dispatches on argv[0]). A real copy rather than a symlink,
-# so the hub's process name differs from the menubar app's — install.sh
-# restarts the app by name, which must never take the hub (and every
-# session it owns) down with it. Not "claudeship": on a case-insensitive
-# filesystem that is the same file as "ClaudeShip".
-HUB_NAME="claudeship-cli"
-cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${HUB_NAME}"
-
-# The hub's web app: static files it serves from Resources/web.
-cp -R web "${APP_DIR}/Contents/Resources/web"
 # The app icon (Finder, Open With…; the menubar glyph is drawn in code),
 # rendered from web/icon.svg by make-mac-icon.sh.
 cp assets/ClaudeShip.icns "${APP_DIR}/Contents/Resources/ClaudeShip.icns"
@@ -103,8 +94,6 @@ else
   echo "==> codesigning ad-hoc (set SIGN_IDENTITY in .env for a stable identity)"
   SIGN_AS="-"
 fi
-# Nested code first: the bundle signature seals it.
-codesign --force --sign "${SIGN_AS}" --identifier "${BUNDLE_ID}.hub" "${APP_DIR}/Contents/MacOS/${HUB_NAME}"
 codesign --force --sign "${SIGN_AS}" --identifier "${BUNDLE_ID}" "${APP_DIR}"
 
 echo "==> done: $(pwd)/${APP_DIR}"

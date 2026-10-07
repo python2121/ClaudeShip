@@ -5,9 +5,9 @@
 (() => {
   'use strict';
 
-  // Must match HubFrame.version in the hub. The hub outlives installs, so
+  // Must match PROTOCOL in the hub (hub/src/frame.rs). The hub outlives installs, so
   // this page can be newer than the hub serving it.
-  const PROTOCOL = 2;
+  const PROTOCOL = 3;
 
   const MODES = {
     auto: ['Auto', "Works without asking, behind Claude's own safety checks."],
@@ -121,6 +121,7 @@
     paintedAt: 0,
     menu: null,        // 'settings', or the project path whose mode menu is open
     launching: false,
+    answering: new Set(),  // approval ids / session ids with a request in flight
     signature: '',
   };
 
@@ -202,7 +203,11 @@
       body: JSON.stringify(body),
     });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.error || `request failed (${response.status})`);
+    if (!response.ok) {
+      const error = new Error(result.error || `request failed (${response.status})`);
+      error.status = response.status;
+      throw error;
+    }
     return result;
   }
 
@@ -306,7 +311,7 @@
     // something changed, and never under an open menu.
     const signature = JSON.stringify([
       data && { ...data, now: 0 }, ui.error, ui.notice, ui.unpaired, ui.filter, [...ui.open], ui.menu,
-      ui.launching, data ? Math.floor(Date.now() / 15000) : 0,
+      ui.launching, [...ui.answering], data ? Math.floor(Date.now() / 15000) : 0,
     ]);
     // A routine repaint waits for an open menu or a text selection in the
     // list — but not forever, or the page would quietly go stale.
@@ -346,7 +351,7 @@
     }
 
     const all = data.projects.flatMap((p) => p.sessions).concat(data.elsewhere);
-    const waiting = all.filter((s) => s.status === 'waiting').length;
+    const waiting = all.filter((s) => s.status === 'waiting' || (data.approvalsSupported && s.approvals && s.approvals.length)).length;
     const busy = all.filter((s) => s.status === 'busy').length;
     updateTitle();
     hostEl.textContent = data.host;
@@ -425,6 +430,7 @@
   function sessionRow(session, project, data) {
     const untitled = !session.title;
     const title = session.title || (session.status === 'starting' ? 'Starting…' : 'New conversation');
+    const approvals = data && data.approvalsSupported && Array.isArray(session.approvals) ? session.approvals : [];
     const meta = [h('span', { class: session.status }, STATUS[session.status] || session.status)];
     if (session.status === 'waiting' && session.waitingFor) meta.push(` — ${session.waitingFor}`);
     const extras = [];
@@ -435,11 +441,24 @@
     if (session.viewers > 0) extras.push(`${session.viewers} attached`);
     for (const extra of extras) meta.push(h('span', { class: 'sep' }, '·'), extra);
 
+    const bolt = data && data.approvalsSupported && autoApproveActive(session.autoApprove)
+      ? h('span', { class: 'bolt', title: autoApproveText(session.autoApprove), 'aria-label': autoApproveText(session.autoApprove) }, '⚡')
+      : null;
     const body = [
       h('span', { class: `glyph ${session.status}` }),
-      h('span', { class: `session-title${untitled ? ' untitled' : ''}` }, title),
-      h('span', { class: 'session-meta' }, meta),
+      h('span', { class: `session-title${untitled ? ' untitled' : ''}` }, title, bolt),
+      approvals.length ? approvalBox(session, approvals) : h('span', { class: 'session-meta' }, meta),
     ];
+    if (approvals.length) {
+      // Buttons can't nest in buttons: the row is a plain box and Open its own button.
+      return h('div', { class: 'session approving' }, body,
+        session.attachable
+          ? h('button', {
+              class: 'session-go', 'data-key': `session:${session.key}`,
+              onclick: () => { location.hash = `#/s/${session.hubId}`; },
+            }, 'Open', icon('right'))
+          : h('span', { class: 'session-go' }, session.background ? 'Background' : 'Terminal only'));
+    }
     if (session.attachable) {
       return h('button', {
         class: 'session', 'data-key': `session:${session.key}`,
@@ -451,6 +470,80 @@
       : 'Started directly in a terminal, so it can only be used there. Sessions started here or with claudeship can be opened from anywhere.';
     return h('div', { class: 'session external', title: why }, body,
       h('span', { class: 'session-go' }, session.background ? 'Background' : 'Terminal only'));
+  }
+
+  const autoApproveActive = (rule) =>
+    Boolean(rule && (rule.session === true || (Number.isFinite(rule.until) && rule.until > now())));
+  const autoApproveText = (rule) => rule && rule.session === true
+    ? 'Approving everything for this session'
+    : `Approving everything until ${new Date(rule.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+
+  /** Approve / Deny / ⋯ and the command summary, in place of the status text. */
+  function approvalBox(session, approvals) {
+    const first = approvals[0];
+    const menuId = `approve:${session.key}`;
+    const open = ui.menu === menuId;
+    const busy = ui.answering.has(first.id) || ui.answering.has(session.sessionId);
+    const extra = approvals.length > 1 ? ` (+${approvals.length - 1} more)` : '';
+    // The hub's summary and detail already start with the tool's name.
+    const tip = first.detail || first.summary || first.tool || '';
+    const rule = (name, label, about) => h('button', {
+      class: 'menu-item', role: 'menuitem', 'data-key': `rule:${session.key}:${name}`,
+      onclick: () => setAutoApprove(session.sessionId, name),
+    }, h('b', null, label), about && h('small', null, about));
+    return h('div', { class: 'approval', title: tip || null },
+      h('div', { class: 'approval-actions' },
+        h('button', {
+          class: 'btn primary small', disabled: busy, 'data-key': `allow:${session.key}`,
+          onclick: () => answerApproval(first.id, true),
+        }, 'Approve'),
+        h('button', {
+          class: 'btn small', disabled: busy, 'data-key': `deny:${session.key}`,
+          onclick: () => answerApproval(first.id, false),
+        }, 'Deny'),
+        session.sessionId && h('div', { class: 'launch', onclick: (event) => event.stopPropagation() },
+          h('button', {
+            class: 'btn small more', 'aria-label': 'More approval options', 'aria-expanded': String(open),
+            'data-key': `more:${session.key}`,
+            onclick: () => { ui.menu = open ? null : menuId; render(true); },
+          }, '⋯'),
+          open && h('div', { class: 'menu right', role: 'menu' },
+            rule('5m', 'Approve all for 5 minutes'),
+            rule('session', 'Approve all for this session', 'Until the session ends or the hub restarts.'),
+            autoApproveActive(session.autoApprove) && rule('off', 'Stop approving')))),
+      h('div', { class: 'approval-summary' }, (first.summary || first.tool || 'Permission request') + extra));
+  }
+
+  async function answerApproval(id, allow) {
+    if (ui.answering.has(id)) return;
+    ui.answering.add(id);
+    render(true);
+    try {
+      await post('/api/approve', { id, allow });
+    } catch (error) {
+      // 404: the terminal (or another screen) answered first, so there is
+      // nothing left to answer.
+      if (error.status !== 404) {
+        notify(`Couldn't send the answer: ${error.message}`);
+      }
+    } finally {
+      ui.answering.delete(id);
+      poll(true);
+    }
+  }
+
+  async function setAutoApprove(sessionId, rule) {
+    ui.menu = null;
+    ui.answering.add(sessionId);
+    render(true);
+    try {
+      await post('/api/auto-approve', { sessionId, rule });
+    } catch (error) {
+      notify(`Couldn't change the standing approval: ${error.message}`);
+    } finally {
+      ui.answering.delete(sessionId);
+      poll(true);
+    }
   }
 
   function launchControl(project, data, primary) {
@@ -1261,7 +1354,7 @@
       document.title = `${t.status === 'waiting' ? '(!) ' : ''}${t.title.textContent || t.project.textContent} — ClaudeShip`;
     } else if (ui.data) {
       const waiting = ui.data.projects.flatMap((p) => p.sessions).concat(ui.data.elsewhere)
-        .filter((s) => s.status === 'waiting').length;
+        .filter((s) => s.status === 'waiting' || (ui.data.approvalsSupported && s.approvals && s.approvals.length)).length;
       document.title = `${waiting ? `(${waiting}) ` : ''}ClaudeShip — ${ui.data.host}`;
     }
   }

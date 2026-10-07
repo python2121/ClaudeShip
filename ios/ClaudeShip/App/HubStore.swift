@@ -7,8 +7,14 @@ import Observation
 /// and each poll is a full scan on the Mac and a radio wake here).
 @Observable
 @MainActor
-final class HubStore {
+final class HubStore: Identifiable {
+    /// The hub's id in `HubRegistry`.
+    let key: UUID
+    var id: UUID { key }
     let connection: HubConnection
+    /// The hub's last known host name (the registry keeps it).
+    private(set) var name: String
+    @ObservationIgnored private let onHost: (String) -> Void
     private(set) var state: HubState?
     private(set) var error: String?
     /// The Mac has been unreachable for a few seconds: the directory hides
@@ -18,10 +24,7 @@ final class HubStore {
     private(set) var offline = false
     /// The host named in the offline note: the Mac's name when we have
     /// heard it, else the address we are dialling.
-    var hostName: String {
-        state?.host ?? UserDefaults.standard.string(forKey: Self.lastHostKey) ?? connection.displayAddress
-    }
-    private static let lastHostKey = "lastHost"
+    var hostName: String { state?.host ?? name }
     @ObservationIgnored private var failingSince: Date?
     @ObservationIgnored private var offlineTask: Task<Void, Never>?
     static let offlineAfter: TimeInterval = 5
@@ -40,9 +43,14 @@ final class HubStore {
     private var ticks = 0
     private var inFlight = false
     private var noticeTask: Task<Void, Never>?
+    /// Approvals with an answer in flight (their buttons are disabled).
+    private(set) var answering: Set<String> = []
 
-    init(connection: HubConnection) {
+    init(key: UUID, name: String, connection: HubConnection, onHost: @escaping (String) -> Void) {
+        self.key = key
+        self.name = name
         self.connection = connection
+        self.onHost = onHost
     }
 
     func setActive(_ active: Bool) {
@@ -80,7 +88,10 @@ final class HubStore {
             // `now` differs every time; compare the rest.
             fresh.now = state?.now ?? fresh.now
             if fresh != state { state = fresh }
-            UserDefaults.standard.set(fresh.host, forKey: Self.lastHostKey)
+            if fresh.host != name {
+                name = fresh.host
+                onHost(fresh.host)
+            }
             unpaired = false
             error = nil
             reachable()
@@ -160,11 +171,36 @@ final class HubStore {
         }
     }
 
-    func unpair() {
-        setActive(false)
-        connection.unpair()
-        state = nil
-        unpaired = true
+    func answer(_ approval: HubApproval, allow: Bool) async {
+        guard !answering.contains(approval.id) else { return }
+        answering.insert(approval.id)
+        defer { answering.remove(approval.id) }
+        do {
+            try await connection.approve(id: approval.id, allow: allow)
+            await refresh()
+        } catch {
+            show("Couldn't answer: \(error.localizedDescription)")
+        }
+    }
+
+    /// "Approve all …": set the standing rule; the hub answers whatever is
+    /// already pending for the session with it. `rule`: "5m", "session", or
+    /// "off".
+    func autoApprove(_ session: HubSession, rule: String) async {
+        guard let sessionId = session.sessionId else { return }
+        do {
+            try await connection.autoApprove(sessionId: sessionId, rule: rule)
+            await refresh()
+        } catch {
+            show("Couldn't change auto-approve: \(error.localizedDescription)")
+        }
+    }
+
+    /// Paired again with a fresh token: forget the refusal and look.
+    func repaired() {
+        unpaired = false
+        error = nil
+        Task { await refresh() }
     }
 
     /// The session with this hub id and the project it sits in, if any.

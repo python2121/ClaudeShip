@@ -1,48 +1,66 @@
 import AppKit
 import Foundation
 
-/// Single source of truth: polls SessionScanner, publishes the session list,
-/// and owns the approval server (pending permission requests + verdicts).
-/// AppDelegate observes objectWillChange to repaint the menubar count;
-/// SessionsView renders the rows.
+/// A permission request pending in the hub, awaiting a click in the overlay.
+struct PendingApproval: Identifiable, Equatable {
+    /// The hub's id for it — what `POST /api/approve` takes.
+    let id: String
+    let sessionId: String?
+    let toolName: String
+    /// Human-readable one-liner of what's being approved (e.g. the Bash
+    /// command), pre-truncated by the hub for display.
+    let summary: String
+    /// The full approval text (newlines intact, generous cap) — what the
+    /// tooltip shows on hover.
+    let detail: String
+    let receivedAt: Date
+}
+
+/// Single source of truth: polls SessionScanner (which also asks the hub
+/// for its state), publishes the session list and the permission requests
+/// pending in the hub. AppDelegate observes objectWillChange to repaint the
+/// menubar count; SessionsView renders the rows.
 @MainActor
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [ClaudeSession] = []
-    /// Permission requests forwarded by the hook helper, awaiting a click.
+    /// Permission requests the hub holds, awaiting a click. Empty when no
+    /// hub runs, or when it speaks another protocol than ours.
     @Published private(set) var pendingApprovals: [PendingApproval] = []
-    /// Menubar style: false (the default) = colored text on the bare menu
-    /// bar, true = the "inverted" look — a solid color block with
-    /// contrasting text. Persisted; AppDelegate repaints via
-    /// objectWillChange on change.
     /// Whether the overlay is on screen. The view's 1 s clock for the
     /// "held 2m" captions runs only then; the hosting view lives for the
     /// app's lifetime, so without this it would re-evaluate the whole
     /// overlay every second with nobody looking.
     @Published var panelVisible = false
+    /// Menubar style: false (the default) = colored text on the bare menu
+    /// bar, true = the "inverted" look — a solid color block with
+    /// contrasting text. Persisted; AppDelegate repaints via
+    /// objectWillChange on change.
     @Published var invertMenubarColors: Bool = UserDefaults.standard.object(forKey: SessionStore.invertMenubarColorsKey) as? Bool ?? false {
         didSet { UserDefaults.standard.set(invertMenubarColors, forKey: SessionStore.invertMenubarColorsKey) }
     }
     private static let invertMenubarColorsKey = "invertMenubarColors"
 
-    enum AutoApproveRule: Equatable {
-        case until(Date)
-        case forSession
-    }
-    /// Per-session auto-approve rules ("approve all …"), keyed by sessionId.
-    /// Checked on arrival; matching requests are allowed without ever
-    /// showing in the UI. Not persisted — an approval standing order
-    /// shouldn't outlive the app that granted it.
-    private(set) var autoApprove: [String: AutoApproveRule] = [:]
+    typealias AutoApproveRule = HubClient.Rule
+    /// Per-session auto-approve rules ("approve all …"), keyed by sessionId,
+    /// as the hub reports them. The hub holds and applies them (in memory
+    /// only); this copy drives the bolt on the row.
+    @Published private(set) var autoApprove: [String: AutoApproveRule] = [:]
 
-    private var server: ApprovalServer?
+    /// Approvals answered here whose disappearance the hub hasn't reported
+    /// yet (its state is cached for up to a second) — kept out of the list
+    /// so a clicked row doesn't flash its buttons back for one poll.
+    private var answered: Set<String> = []
+    /// Rules set here, shown until the hub's state has had time to carry them.
+    private var localRules: [String: (rule: AutoApproveRule, at: Date)] = [:]
+
     private var timer: Timer?
     /// Everything we poll is local (a readdir + a stat and a tail-read per
-    /// session), so a tight interval is cheap and keeps the count honest.
+    /// session, one loopback request to the hub), so a tight interval is
+    /// cheap and keeps the count honest.
     private let pollInterval: TimeInterval = 2
 
     init(startPolling: Bool = true) {
         guard startPolling else { return }
-        startApprovalServer()
         Task { await refresh() }
         timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             guard let self else { return }
@@ -51,8 +69,9 @@ final class SessionStore: ObservableObject {
     }
 
     func refresh() async {
-        // The scan blocks on file IO — keep it off the main thread.
-        var scanned = await Task.detached(priority: .utility) { SessionScanner.scan() }.value
+        // The scan blocks on file IO and the hub request — keep it off the
+        // main thread.
+        var (scanned, hub) = await Task.detached(priority: .utility) { SessionScanner.scanWithHub() }.value
         // Branch and title are garnish scraped from the transcript tail and
         // not every scan can see them (the tail window may hold only entries
         // without). Sessions don't lose them — carry the last known values
@@ -66,8 +85,7 @@ final class SessionStore: ObservableObject {
         // transcript mtime moves every scan and would otherwise republish
         // (and re-diff the whole view) every 2 s for nothing.
         if !Self.sameForDisplay(scanned, sessions) { sessions = scanned }
-        reconcilePendingWithRegistry()
-        pruneRules()
+        applyHubApprovals(hub, scanned: scanned)
     }
 
     static func sameForDisplay(_ a: [ClaudeSession], _ b: [ClaudeSession]) -> Bool {
@@ -80,94 +98,73 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    /// The terminal prompt renders concurrently with our buttons (the CLI
-    /// shows it while the PermissionRequest hook is still running), so the
-    /// user can answer in either place. When they answer in the terminal,
-    /// the session's registry status leaves `waiting` with a fresh
-    /// statusUpdatedAt — drop our stale buttons and close the helper
-    /// connection without a verdict, so we never talk over their answer.
-    private func reconcilePendingWithRegistry() {
+    // MARK: Approvals (held by the hub)
+
+    /// Take the pending requests and rules from the hub's state. The hub
+    /// does everything else: it notices an answer given in the terminal,
+    /// prunes requests whose session is gone, and applies the rules.
+    private func applyHubApprovals(_ hub: HubClient.State?, scanned: [ClaudeSession]) {
+        var pending: [PendingApproval] = []
+        var rules: [String: AutoApproveRule] = [:]
+        if let hub, hub.approvalsUsable {
+            for entry in hub.sessions {
+                // The hub's entries are keyed by Claude pid; the registry
+                // gives the sessionId when the hub's entry doesn't carry one.
+                let sid = entry.sessionId ?? scanned.first { $0.pid == entry.pid }?.sessionId
+                if let sid, let rule = entry.autoApprove { rules[sid] = rule }
+                for a in entry.approvals {
+                    pending.append(PendingApproval(id: a.id, sessionId: sid, toolName: a.tool,
+                                                   summary: a.summary, detail: a.detail, receivedAt: a.receivedAt))
+                }
+            }
+        }
+        answered.formIntersection(pending.map(\.id))
+        pending.removeAll { answered.contains($0.id) }
+        pending.sort { $0.receivedAt < $1.receivedAt }
         let now = Date()
-        for approval in pendingApprovals {
-            let session = approval.sessionId.flatMap { sid in
-                sessions.first { $0.sessionId == sid }
-            }
-            let drop: Bool
-            if let session {
-                drop = Self.resolvedInTerminal(state: session.state,
-                                               stateSince: session.stateSince,
-                                               receivedAt: approval.receivedAt)
-            } else {
-                // No matching live session (it exited, or the ids never
-                // lined up). With no helper deadline anymore, this is the
-                // only thing standing between an unanswerable request and
-                // an immortal one — prune after a short grace period that
-                // covers registry lag at session start.
-                drop = Self.shouldPruneUnmatched(receivedAt: approval.receivedAt, now: now)
-            }
-            guard drop else { continue }
-            server?.cancel(approval.id)
-            pendingApprovals.removeAll { $0.id == approval.id }
-        }
+        localRules = localRules.filter { now.timeIntervalSince($0.value.at) < 4 }
+        for (sid, local) in localRules where rules[sid] == nil { rules[sid] = local.rule }
+        if pending != pendingApprovals { pendingApprovals = pending }
+        if rules != autoApprove { autoApprove = rules }
     }
 
-    nonisolated static func shouldPruneUnmatched(receivedAt: Date, now: Date) -> Bool {
-        now.timeIntervalSince(receivedAt) > 10
-    }
+    func approve(_ approval: PendingApproval) { answer(approval, allow: true) }
+    func deny(_ approval: PendingApproval) { answer(approval, allow: false) }
 
-    /// True when a status change *newer than the approval's arrival* moved
-    /// the session out of `waiting`. At arrival the session still reads
-    /// `busy` from *before* the prompt (stale stateSince, no false drop);
-    /// the prompt itself reads `waiting` (kept); only an answer produces a
-    /// non-waiting status that postdates the request.
-    nonisolated static func resolvedInTerminal(state: ClaudeSession.State, stateSince: Date?, receivedAt: Date) -> Bool {
-        state != .waitingForInput && (stateSince ?? .distantPast) > receivedAt
-    }
-
-    // MARK: Approvals
-
-    private func startApprovalServer() {
-        let server = ApprovalServer(path: ApprovalSocket.defaultPath)
-        server.onRequest = { [weak self] id, info in
-            let approval = PendingApproval(
-                id: id, sessionId: info.sessionId, cwd: info.cwd,
-                toolName: info.toolName, summary: info.summary,
-                detail: info.detail, receivedAt: Date())
-            Task { @MainActor in self?.received(approval) }
-        }
-        server.onClosed = { [weak self] id in
-            // Helper hit its deadline (or died): the prompt is back in the
-            // terminal — drop the buttons immediately.
-            Task { @MainActor in self?.pendingApprovals.removeAll { $0.id == id } }
-        }
-        if server.start() { self.server = server }
-    }
-
-    private func received(_ approval: PendingApproval) {
-        if let sid = approval.sessionId,
-           Self.ruleAllows(autoApprove[sid], now: Date()) {
-            server?.respond(approval.id, allow: true)
-            return
-        }
-        pendingApprovals.append(approval)
-    }
-
-    func approve(_ approval: PendingApproval) {
-        server?.respond(approval.id, allow: true)
+    private func answer(_ approval: PendingApproval, allow: Bool) {
+        answered.insert(approval.id)
         pendingApprovals.removeAll { $0.id == approval.id }
+        Task {
+            let ok = await Task.detached { HubClient.approve(approval.id, allow: allow) }.value
+            // Not delivered (hub gone mid-click): let the buttons come back
+            // with the next poll if the hub still holds the request.
+            if !ok { answered.remove(approval.id) }
+            await refresh()
+        }
     }
 
-    func deny(_ approval: PendingApproval) {
-        server?.respond(approval.id, allow: false)
-        pendingApprovals.removeAll { $0.id == approval.id }
-    }
-
-    /// "Approve all …": set the standing rule, then let it swallow whatever
+    /// "Approve all …": the hub sets the standing rule and answers whatever
     /// is already pending for that session.
     func approveAll(sessionId: String, rule: AutoApproveRule) {
+        let wire: String
+        switch rule {
+        case .forSession: wire = "session"
+        case .until: wire = "5m"
+        }
+        localRules[sessionId] = (rule, Date())
         autoApprove[sessionId] = rule
-        for approval in pendingApprovals where approval.sessionId == sessionId {
-            approve(approval)
+        let hidden = pendingApprovals.filter { $0.sessionId == sessionId }.map(\.id)
+        answered.formUnion(hidden)
+        pendingApprovals.removeAll { $0.sessionId == sessionId }
+        Task {
+            let ok = await Task.detached { HubClient.autoApprove(sessionId: sessionId, rule: wire) }.value
+            if !ok {
+                // Only this click's requests come back; others answered
+                // individually stay hidden until the hub drops them.
+                localRules[sessionId] = nil
+                answered.subtract(hidden)
+            }
+            await refresh()
         }
     }
 
@@ -176,17 +173,6 @@ final class SessionStore: ObservableObject {
         case .until(let expiry): return now < expiry
         case .forSession: return true
         case nil: return false
-        }
-    }
-
-    /// Expired timers and rules for sessions that no longer exist fall away.
-    private func pruneRules() {
-        let liveIds = Set(sessions.compactMap { $0.sessionId })
-        let now = Date()
-        autoApprove = autoApprove.filter { sid, rule in
-            guard liveIds.contains(sid) else { return false }
-            if case .until(let expiry) = rule { return now < expiry }
-            return true
         }
     }
 

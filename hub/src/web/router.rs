@@ -1,0 +1,420 @@
+//! The HTTP side: the gate every request passes, the pairing link, the
+//! JSON API, the terminal WebSocket's upgrade, and the page's files. Paths,
+//! status codes, and bodies are the Swift hub's, so the page and the phone
+//! work against either.
+//!
+//! | Route | Gate | |
+//! |---|---|---|
+//! | `GET /auth?k=` | host | the secret, once → 303 `/` + cookie |
+//! | `GET /ws/term?id&rows&cols&claim` | host, same-origin, paired | a terminal (`ws`) |
+//! | `GET /api/state` | host, paired | the directory, cached 1 s |
+//! | `POST /api/launch`, `/api/kill`, `/api/settings`, `/api/approve`, `/api/auto-approve` | host, same-origin, paired, JSON | |
+//! | `GET /*` | host | the page's files |
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use axum::Router;
+use axum::body::Body;
+use axum::extract::ws::WebSocketUpgrade;
+use axum::extract::{FromRequestParts, Request, State};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::middleware::{Next, from_fn_with_state, map_response};
+use axum::response::{IntoResponse, Response};
+use axum::routing::any;
+use serde_json::{Map, Value, json};
+use tokio::sync::{oneshot, watch};
+
+use super::security::{
+    constant_time_equals, cookie, is_allowed_host, is_same_origin, percent_decode,
+};
+use super::{ConnectionSlot, Shared, assets, ws};
+use crate::approvals::Rule;
+use crate::config::HubConfig;
+use crate::hub::{Command, clamp_size};
+use crate::token::COOKIE_NAME;
+
+/// Request bodies past this are refused (the API's are a few dozen bytes).
+const MAX_BODY: usize = 1 << 20;
+/// A browser terminal's largest message (a paste).
+const MAX_MESSAGE: usize = 8 << 20;
+
+/// What the gate found out about a request, for the handlers.
+#[derive(Clone)]
+struct Gate {
+    /// The Host header, already known to be one we answer to.
+    host: String,
+    same_origin: bool,
+    /// The request carries this hub's pairing secret.
+    paired: bool,
+    /// Percent-decoded.
+    path: String,
+    query: HashMap<String, String>,
+    /// Subscribed before the secret was checked: a terminal that passed
+    /// the check still hangs up if the secret changed at any point after.
+    epoch: watch::Receiver<u64>,
+}
+
+pub fn router(shared: Arc<Shared>) -> Router {
+    Router::new()
+        .route("/auth", any(auth))
+        .route("/ws/term", any(terminal))
+        .route("/api/state", any(api_state))
+        .route("/api/launch", any(api_post))
+        .route("/api/kill", any(api_post))
+        .route("/api/settings", any(api_post))
+        .route("/api/approve", any(api_post))
+        .route("/api/auto-approve", any(api_post))
+        .fallback(fallback)
+        .layer(from_fn_with_state(shared.clone(), gate))
+        .layer(map_response(common_headers))
+        .with_state(shared)
+}
+
+// MARK: Responses
+
+fn respond(status: u16, content_type: &str, body: impl Into<Body>) -> Response {
+    let mut response = Response::new(body.into());
+    *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    if let Ok(value) = HeaderValue::from_str(content_type) {
+        response.headers_mut().insert(header::CONTENT_TYPE, value);
+    }
+    response
+}
+
+fn text(status: u16, body: &'static str) -> Response {
+    respond(status, "text/plain; charset=utf-8", body)
+}
+
+fn json_response(status: u16, value: Value) -> Response {
+    respond(status, "application/json", value.to_string())
+}
+
+/// On every answer but a WebSocket's 101: one request per connection, and
+/// nothing cached, sniffed, or referred.
+async fn common_headers(mut response: Response) -> Response {
+    if response.status() != StatusCode::SWITCHING_PROTOCOLS {
+        let headers = response.headers_mut();
+        headers.insert(header::CONNECTION, HeaderValue::from_static("close"));
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        headers.insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
+        headers.insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
+    }
+    response
+}
+
+// MARK: The gate
+
+fn header_text(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// `a=1&b=%20` as the Swift hub read it: pieces split on `&` (empty ones
+/// dropped), percent-decoded, a key that doesn't decode skipped, a value
+/// that doesn't decode empty. `+` is not a space.
+fn parse_query(query: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = match pair.split_once('=') {
+            Some((k, v)) => (k, Some(v)),
+            None => (pair, None),
+        };
+        let Some(key) = percent_decode(key) else {
+            continue;
+        };
+        let value = value.map(|v| percent_decode(v).unwrap_or_default());
+        out.insert(key, value.unwrap_or_default());
+    }
+    out
+}
+
+/// Before any route: the Host header must be a name DNS can't fake; an
+/// upgrade must be the terminal's, same-origin and paired; the API needs
+/// the pairing secret. Only the pairing link itself goes without it.
+async fn gate(State(shared): State<Arc<Shared>>, mut request: Request, next: Next) -> Response {
+    let Some(path) = percent_decode(request.uri().path()).filter(|p| p.starts_with('/')) else {
+        return text(400, "bad request");
+    };
+    let headers = request.headers();
+    let Some(host) = header_text(headers, header::HOST)
+        .filter(|h| is_allowed_host(h, &shared.allowed_hosts))
+        .map(str::to_string)
+    else {
+        return text(
+            403,
+            "This hub answers only to localhost or its Tailscale IP address.",
+        );
+    };
+    // An Origin that isn't readable text, or more than one, is not ours:
+    // only a missing one means "not a browser".
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let same_origin = match (origins.next(), origins.next()) {
+        (None, _) => is_same_origin(None, Some(&host)),
+        (Some(origin), None) => origin
+            .to_str()
+            .is_ok_and(|origin| is_same_origin(Some(origin), Some(&host))),
+        (Some(_), Some(_)) => false,
+    };
+    let epoch = shared.epoch();
+    let paired = shared.token().is_some_and(|token| {
+        cookie(COOKIE_NAME, header_text(headers, header::COOKIE))
+            .is_some_and(|offered| constant_time_equals(&offered, &token))
+    });
+    let get = request.method() == Method::GET;
+    let is_auth = get && path == "/auth";
+    let upgrade = header_text(headers, header::UPGRADE)
+        .is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
+    if !is_auth && upgrade {
+        let key = headers.contains_key(header::SEC_WEBSOCKET_KEY);
+        if !(get && path == "/ws/term" && same_origin && paired && key) {
+            return text(403, "websocket refused");
+        }
+    }
+    if !is_auth && path.starts_with("/api/") && !paired {
+        return json_response(401, json!({"error": "not paired"}));
+    }
+    let query = parse_query(request.uri().query().unwrap_or(""));
+    request.extensions_mut().insert(Gate {
+        host,
+        same_origin,
+        paired,
+        path,
+        query,
+        epoch,
+    });
+    next.run(request).await
+}
+
+fn gate_of(request: &Request) -> Gate {
+    request
+        .extensions()
+        .get::<Gate>()
+        .cloned()
+        .expect("the gate runs before every route")
+}
+
+// MARK: Routes
+
+/// Any GET the routes don't claim is a file; anything else is refused.
+async fn fallback(request: Request) -> Response {
+    let gate = gate_of(&request);
+    other(request.method(), &gate)
+}
+
+fn other(method: &Method, gate: &Gate) -> Response {
+    if method == Method::GET {
+        asset(&gate.path, &gate.host)
+    } else {
+        text(405, "method not allowed")
+    }
+}
+
+fn asset(path: &str, host: &str) -> Response {
+    let Some((data, kind)) = assets::lookup(path) else {
+        return text(404, "not found");
+    };
+    let mut response = respond(200, kind, data);
+    // Everything the page loads is ours; xterm.js injects <style>
+    // elements, hence the inline-style allowance. The WebSocket origin is
+    // spelled out because Safari doesn't count ws: under 'self'; `host`
+    // has passed `is_allowed_host`, so it is safe to echo.
+    let csp = format!(
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+         connect-src 'self' ws://{host} wss://{host}; frame-ancestors 'none'; base-uri 'none'"
+    );
+    if let Ok(value) = HeaderValue::from_str(&csp) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, value);
+    }
+    response
+}
+
+/// Pairing: the link from `claudeship hub link` carries the secret once;
+/// from then on the browser holds it as a cookie.
+async fn auth(State(shared): State<Arc<Shared>>, request: Request) -> Response {
+    let gate = gate_of(&request);
+    if request.method() != Method::GET {
+        return other(request.method(), &gate);
+    }
+    let token = shared.token();
+    let Some(token) = token.filter(|token| {
+        gate.query
+            .get("k")
+            .is_some_and(|offered| constant_time_equals(offered, token))
+    }) else {
+        return text(403, "That pairing link is not valid for this hub.");
+    };
+    let mut response = respond(303, "text/plain; charset=utf-8", Body::empty());
+    let headers = response.headers_mut();
+    headers.insert(header::LOCATION, HeaderValue::from_static("/"));
+    if let Ok(value) = HeaderValue::from_str(&format!(
+        "{COOKIE_NAME}={token}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict"
+    )) {
+        headers.insert(header::SET_COOKIE, value);
+    }
+    response
+}
+
+/// A browser terminal. The gate has already refused any upgrade that isn't
+/// this one, same-origin, and paired.
+async fn terminal(State(shared): State<Arc<Shared>>, request: Request) -> Response {
+    let gate = gate_of(&request);
+    let upgrade = header_text(request.headers(), header::UPGRADE)
+        .is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
+    if !upgrade {
+        return other(request.method(), &gate);
+    }
+    let slot = request.extensions().get::<Arc<ConnectionSlot>>().cloned();
+    let (mut parts, _) = request.into_parts();
+    let upgrade = match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
+        Ok(upgrade) => upgrade,
+        Err(rejection) => return rejection.into_response(),
+    };
+    let number = |k: &str| {
+        gate.query
+            .get(k)
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
+    };
+    let size = clamp_size(number("rows"), number("cols"));
+    let epoch = gate.epoch.clone();
+    let attach = ws::Attach {
+        id: gate.query.get("id").cloned().unwrap_or_default(),
+        size,
+        // `claim=0`: a screen that was only mirroring reconnects as a
+        // spectator rather than resizing the session under its user.
+        claim: gate.query.get("claim").map(String::as_str) != Some("0"),
+    };
+    upgrade
+        .max_message_size(MAX_MESSAGE)
+        .max_frame_size(MAX_MESSAGE)
+        .on_upgrade(move |socket| ws::run(socket, shared, attach, slot, epoch))
+}
+
+async fn api_state(State(shared): State<Arc<Shared>>, request: Request) -> Response {
+    let gate = gate_of(&request);
+    if request.method() != Method::GET {
+        return other(request.method(), &gate);
+    }
+    respond(200, "application/json", shared.state.get(&shared.hub).await)
+}
+
+/// Asks the hub and waits for its answer.
+async fn ask<T>(shared: &Shared, make: impl FnOnce(oneshot::Sender<T>) -> Command) -> Option<T> {
+    let (tx, rx) = oneshot::channel();
+    shared.hub.send(make(tx)).ok()?;
+    rx.await.ok()
+}
+
+fn hub_gone() -> Response {
+    json_response(500, json!({"error": "the hub is stopping"}))
+}
+
+async fn api_post(State(shared): State<Arc<Shared>>, request: Request) -> Response {
+    let gate = gate_of(&request);
+    if request.method() != Method::POST {
+        return other(request.method(), &gate);
+    }
+    let json_type = header_text(request.headers(), header::CONTENT_TYPE)
+        .is_some_and(|t| t.to_lowercase().starts_with("application/json"));
+    let Ok(body) = axum::body::to_bytes(request.into_body(), MAX_BODY).await else {
+        return text(400, "bad request");
+    };
+    // JSON-only and same-origin: a form on another site can send neither,
+    // so it can't start or end sessions through the user's browser.
+    let object: Option<Map<String, Value>> = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|v| match v {
+            Value::Object(o) => Some(o),
+            _ => None,
+        });
+    let Some(body) = object.filter(|_| gate.same_origin && json_type && gate.paired) else {
+        return json_response(403, json!({"error": "refused"}));
+    };
+    let string = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
+    let response = match gate.path.as_str() {
+        "/api/launch" => {
+            let asked = ask(&shared, |reply| Command::WebLaunch {
+                path: string("path").unwrap_or_default(),
+                mode: string("permissionMode"),
+                resume: string("resume"),
+                reply,
+            })
+            .await;
+            match asked {
+                Some((status, value)) => json_response(status, value),
+                None => hub_gone(),
+            }
+        }
+        "/api/kill" => {
+            let id = string("id").unwrap_or_default();
+            match ask(&shared, |reply| Command::WebKill { id, reply }).await {
+                Some(true) => json_response(200, json!({"ok": true})),
+                Some(false) => json_response(404, json!({"error": "no such session"})),
+                None => hub_gone(),
+            }
+        }
+        "/api/approve" => {
+            let (Some(id), Some(allow)) = (string("id"), body.get("allow").and_then(Value::as_bool)) else {
+                return json_response(400, json!({"error": "approve needs an id and allow"}));
+            };
+            match ask(&shared, |reply| Command::Approve { id, allow, reply }).await {
+                Some(true) => json_response(200, json!({"ok": true})),
+                Some(false) => json_response(404, json!({"error": "no such approval"})),
+                None => hub_gone(),
+            }
+        }
+        "/api/auto-approve" => {
+            let session_id = string("sessionId").filter(|id| crate::web::state::is_session_id(id));
+            let rule = string("rule").map(|r| Rule::parse(&r, SystemTime::now()));
+            let (Some(session_id), Some(Ok(rule))) = (session_id, rule) else {
+                return json_response(
+                    400,
+                    json!({"error": "auto-approve needs a sessionId (a UUID) and a rule: 5m, session, or off"}),
+                );
+            };
+            match ask(&shared, |reply| Command::AutoApprove { session_id, rule, reply }).await {
+                Some(()) => json_response(200, json!({"ok": true})),
+                None => hub_gone(),
+            }
+        }
+        _ => {
+            let Some(mode) =
+                string("defaultPermissionMode").filter(|m| HubConfig::permission_modes().contains(&m.as_str()))
+            else {
+                return json_response(400, json!({"error": "unknown permission mode"}));
+            };
+            match ask(&shared, |reply| Command::WebSettings { mode, reply }).await {
+                Some(()) => json_response(200, json!({"ok": true})),
+                None => hub_gone(),
+            }
+        }
+    };
+    shared.state.invalidate();
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_strings_as_the_swift_hub_read_them() {
+        let q = parse_query("id=abc&rows=24&claim=0&&k=%41b+c&bad%zz=1&empty&v=%zz");
+        assert_eq!(q["id"], "abc");
+        assert_eq!(q["rows"], "24");
+        assert_eq!(q["claim"], "0");
+        assert_eq!(q["k"], "Ab+c", "plus is not a space");
+        assert_eq!(q["empty"], "");
+        assert_eq!(q["v"], "", "a value that doesn't decode is empty");
+        assert!(!q.keys().any(|k| k.starts_with("bad")), "a key that doesn't decode is skipped");
+    }
+}
