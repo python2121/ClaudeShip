@@ -166,6 +166,13 @@ pub enum Command {
         mode: String,
         reply: oneshot::Sender<()>,
     },
+    /// `POST /api/settings {jobs}` from a browser on this very machine
+    /// (loopback): the jobs switch, live and saved. The reply is how many
+    /// running jobs a switch-off ended.
+    WebJobs {
+        enabled: bool,
+        reply: oneshot::Sender<usize>,
+    },
     /// A permission-hook helper sent its request; `verdict` is what its
     /// connection waits on (dropping it hangs up without one).
     ApprovalArrived {
@@ -403,6 +410,9 @@ impl Hub {
                     log(&format!("cannot save {}: {e}", paths::config().display()));
                 }
                 let _ = reply.send(());
+            }
+            Command::WebJobs { enabled, reply } => {
+                let _ = reply.send(self.set_jobs(enabled, "a browser on this machine"));
             }
             Command::ApprovalArrived { approval, verdict } => {
                 // The tool, not the summary: a command line can carry a
@@ -1130,9 +1140,26 @@ impl Hub {
             "root": self.config.root,
             "swarmId": self.web.shared.swarm.book.id(),
             "peerRequests": self.web.shared.swarm.client.sent(),
-            "jobs": self.web.shared.jobs.enabled,
+            "jobs": self.web.shared.jobs.enabled(),
             "sessions": sessions,
         })
+    }
+
+    /// The jobs switch (`jobs.md`): live, saved to `config.json`, and
+    /// logged — the log is where "when was remote execution open" is
+    /// answered. Off ends every running job; how many is returned.
+    fn set_jobs(&mut self, enabled: bool, by: &str) -> usize {
+        let ended = self.web.shared.jobs.set_enabled(enabled);
+        self.config.jobs = enabled;
+        if let Err(e) = self.config.save(&paths::config()) {
+            log(&format!("cannot save {}: {e}", paths::config().display()));
+        }
+        log(&format!(
+            "jobs {} from this machine ({by}){}",
+            if enabled { "enabled" } else { "disabled" },
+            if ended > 0 { format!(" — {ended} running job(s) ended") } else { String::new() }
+        ));
+        ended
     }
 
     /// The first frame from a terminal client says what it wants.
@@ -1215,6 +1242,15 @@ impl Hub {
                 self.reply(client, json!({"ok": ok && left}));
             }
             "peers" => self.reply(client, self.web.shared.swarm.book.view()),
+            // The jobs switch, from a terminal on this machine (the socket
+            // is this user's alone); without `enabled`, just the state.
+            "jobs" => match request.get("enabled").and_then(Value::as_bool) {
+                Some(enabled) => {
+                    let ended = self.set_jobs(enabled, "claudeship hub jobs");
+                    self.reply(client, json!({"ok": true, "jobs": enabled, "ended": ended}));
+                }
+                None => self.reply(client, json!({"jobs": self.web.shared.jobs.enabled()})),
+            },
             "unpair" => match self.web.shared.swarm.book.unpair(&string("target")) {
                 Ok(record) => self.reply(client, json!({"ok": true, "record": record.to_value()})),
                 Err(e) => self.fail(client, e),

@@ -835,13 +835,14 @@ impl Book {
 }
 
 /// The keys of a hub's state that make up its `hosts` entry.
-const HOST_KEYS: [&str; 9] = [
+const HOST_KEYS: [&str; 10] = [
     "protocol",
     "now",
     "root",
     "rootDisplay",
     "home",
     "defaultPermissionMode",
+    "jobs",
     "projects",
     "elsewhere",
     "approvalsSupported",

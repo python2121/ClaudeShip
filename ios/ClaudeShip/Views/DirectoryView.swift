@@ -27,6 +27,8 @@ struct DirectoryView: View {
     @AppStorage("projectsTab") private var projectsTab = ""
     /// `-expand <name>` at launch (simulator scripting).
     nonisolated(unsafe) static var initialExpanded: String?
+    /// `-settings` at launch (simulator scripting): open the sheet.
+    nonisolated(unsafe) static var initialSettings = false
 
     var body: some View {
         List {
@@ -85,6 +87,9 @@ struct DirectoryView: View {
             ForEach(quickTargets) { target in
                 Button(target.host.target == nil ? target.store.hostName : target.host.displayName) { quick(target) }
             }
+        }
+        .onAppear {
+            if Self.initialSettings { Self.initialSettings = false; settings = true }
         }
         .sheet(isPresented: $settings) { SettingsView() }
         .sheet(item: $repairing) { store in PairView(asSheet: true, refused: store) }

@@ -242,7 +242,7 @@ answered within 15 s is dropped.
 | `GET /api/state` | host, paired (401 `{"error":"not paired"}`) | the directory |
 | `POST /api/launch` `{path, permissionMode?, resume?}` | host, same-origin, paired, JSON (403 `{"error":"refused"}`) | `{id}`; 400 not a project directory / unknown permission mode / bad conversation id; 500 on spawn failure |
 | `POST /api/kill` `{id}` | same | `{ok}`; 404 no such session |
-| `POST /api/settings` `{defaultPermissionMode}` | same | `{ok}`, saved to `config.json` |
+| `POST /api/settings` `{defaultPermissionMode}` or `{jobs: bool}` | same; `{jobs}` also needs a loopback connection | `{ok}`, saved to `config.json`; `{jobs}` is the live jobs switch (`jobs.md`): `{ok, jobs, ended}`, from this machine only — a non-loopback client, a `host` naming a peer, and `/peer/api/settings {jobs}` are all 403 |
 | `POST /api/approve` `{id, allow}` | same | `{ok}`; 404 no such approval; 400 |
 | `POST /api/auto-approve` `{sessionId, rule}` | same | `{ok}` (`5m`, `session`, `off`); 400 |
 | `POST /api/swarm` `{}` | same | `{secret, peers}` (see "The swarm") |

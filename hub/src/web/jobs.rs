@@ -8,7 +8,8 @@
 //! | `GET /api/jobs/<id>?host=&wait=<s>&since=<n>&consume=1` | the job, stdout from byte `since`; `wait` long-polls up to 60 s |
 //! | `POST /api/jobs/<id>/kill {host?}` | `{ok}` |
 //!
-//! With `config.jobs` off every route here answers 403 `{error: "jobs
+//! With jobs off (`config.jobs`, switched live by `POST /api/settings
+//! {jobs}`) every route here answers 403 `{error: "jobs
 //! disabled on this host"}` — on the hub that would run the job: a home
 //! hub relays a request naming another host whatever its own switch.
 
@@ -48,7 +49,7 @@ pub async fn local(
     body: Option<Map<String, Value>>,
     patience: Option<&Patience>,
 ) -> Response {
-    if !jobs.enabled {
+    if !jobs.enabled() {
         return disabled();
     }
     let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();

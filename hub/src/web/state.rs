@@ -510,6 +510,8 @@ pub fn build(snapshot: &Snapshot) -> (Value, Reconciliation) {
         "home": home,
         "defaultPermissionMode": config.default_permission_mode,
         "permissionModes": HubConfig::permission_modes(),
+        // Live (the hub updates its config when the switch is flipped).
+        "jobs": config.jobs,
         "now": ms(SystemTime::now()),
         "projects": ordered,
         "elsewhere": elsewhere,

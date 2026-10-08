@@ -57,8 +57,10 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
   app when nothing is paired or the only hub refuses the token (exactly the
   old behaviour); otherwise it is a sheet — "Pair another hub" in Settings,
   "Pair again" in a refused hub's section. Settings: one hub → its settings
-  inline as before; several → a list (swipe or open one to unpair; the
-  default mode is per hub).
+  inline as before; several → a list (swipe or open one to unpair). Per
+  hub it shows the machine, address, projects root, and whether jobs are
+  on — read-only: the hub takes the jobs switch only from the machine
+  itself (`claudeship hub jobs on|off`, or its web page at localhost).
 - The directory is Running on top, then Projects (the web page's
   layout, `docs/ios-directory-tabs.md`): one run of running sections per
   hub (`HubSections`), headed by a `HubTitle` row only when two or more
@@ -180,7 +182,7 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
   custom-URL "Open?" prompt from outside): `-pair <link>` (repeat it for
   several hubs; a tiny Python server answering `/api/state` on two ports
   is enough to lay out the multi-hub directory), `-session <hub
-  id>`, `-expand <project name>`, `-swarm` (open the add-to-swarm step for
+  id>`, `-expand <project name>`, `-settings` (open the Settings sheet), `-swarm` (open the add-to-swarm step for
   the last hub paired) / `-swarm-confirm` (…and press Add); `SIMCTL_CHILD_CH_OFF=glyph,launch,header,tally,running` turns directory
   pieces off for bisecting layout trouble (`running` hides the Running
   part, which puts the Projects tabs on the first screen); `-projectsTab

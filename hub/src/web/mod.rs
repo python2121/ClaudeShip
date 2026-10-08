@@ -96,6 +96,12 @@ impl Shared {
 #[derive(Clone, Default)]
 pub struct Patience(Arc<AtomicU64>);
 
+/// Where a request's connection came from. Loopback is the one address
+/// that proves the client runs on this machine (the web gate already
+/// refuses loopback-to-anything-else pairs), which the jobs switch needs.
+#[derive(Clone, Copy)]
+pub struct RemoteIp(pub std::net::IpAddr);
+
 impl Patience {
     pub fn extend(&self, seconds: u64) {
         self.0.fetch_max(seconds, Ordering::Relaxed);

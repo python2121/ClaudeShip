@@ -484,7 +484,7 @@ impl Server {
                 let sessions = sessions_of(h).len();
                 let mut out = pick(
                     h,
-                    &["name", "id", "local", "reachable", "protocol", "root", "home", "defaultPermissionMode", "lastSeen"],
+                    &["name", "id", "local", "reachable", "protocol", "root", "home", "defaultPermissionMode", "jobs", "lastSeen"],
                 );
                 out.insert("sessions".into(), sessions.into());
                 Value::Object(out)

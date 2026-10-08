@@ -20,6 +20,10 @@ struct HubState: Decodable, Equatable {
     /// Every machine in this hub's swarm, local first (phase 10; absent
     /// from an older hub, which is then exactly one host: the fields above).
     var hosts: [HubHost]?
+    /// Whether this hub runs jobs (remote command execution). Live, but
+    /// switched only at the machine itself — the phone shows it, never
+    /// sets it. Absent from an older hub.
+    var jobs: Bool?
 
     /// Must match PROTOCOL in the hub (hub/src/frame.rs) and in web/app.js.
     static let protocolVersion = 3
@@ -32,7 +36,7 @@ struct HubState: Decodable, Equatable {
         HubHost(id: hosts?.first(where: { $0.local == true })?.id ?? "", name: host, local: true, reachable: true,
                 lastSeen: nil, protocol: self.protocol, now: now, root: root, rootDisplay: rootDisplay, home: home,
                 defaultPermissionMode: defaultPermissionMode, projects: projects, elsewhere: elsewhere,
-                approvalsSupported: approvalsSupported)
+                approvalsSupported: approvalsSupported, jobs: jobs)
     }
 
     /// The hosts to show: the swarm's, or the hub alone.
@@ -74,6 +78,7 @@ struct HubHost: Decodable, Identifiable, Equatable {
     var projects: [HubProject]?
     var elsewhere: [HubSession]?
     var approvalsSupported: Bool?
+    var jobs: Bool?
 
     var isLocal: Bool { local == true }
     var isReachable: Bool { local == true || reachable != false }
@@ -331,11 +336,6 @@ extension HubConnection {
         guard status == 200 else { throw refusal(data, status) }
     }
 
-    func setDefaultMode(_ mode: String, host: String?) async throws {
-        let (data, status) = try await send(request("/api/settings", method: "POST",
-                                                    json: body(["defaultPermissionMode": mode], host: host)))
-        guard status == 200 else { throw refusal(data, status) }
-    }
 
     /// Swarm enrolment, step one, on a member: the swarm's secret and its
     /// peer records. The secret only ever passes through memory — never

@@ -20,6 +20,7 @@ usage: claudeship [claude arguments]   start Claude in this directory, through t
        claudeship hub pair <link>       join the swarm of the hub whose link (from its hub link) this is
        claudeship hub peers             the other hubs in this one's swarm
        claudeship hub unpair <name>     drop a hub from the swarm (everywhere, within a few polls)
+       claudeship hub jobs [on|off]     allow (or stop) commands run here by paired clients and peers — only from this machine
        claudeship hub start             start the hub if it isn't running
        claudeship hub restart [--force] stop the hub and start it again (--force: even with sessions)
        claudeship hub attach <id>       open a running session in this terminal (hub id or Claude session id)
@@ -76,6 +77,7 @@ pub fn run(args: &[OsString]) -> ! {
             std::process::exit(0);
         }
         "pair" => super::pair::pair(rest.first()),
+        "jobs" => jobs_switch(rest.first().map(String::as_str)),
         "peers" => super::pair::peers(),
         "unpair" => super::pair::unpair(rest.first()),
         "attach" => {
@@ -129,6 +131,35 @@ pub fn run(args: &[OsString]) -> ! {
             });
         }
     }
+}
+
+/// `hub jobs [on|off]`: the jobs switch, from this machine (the socket),
+/// live; without an argument, the state.
+fn jobs_switch(what: Option<&str>) -> ! {
+    let enabled = match what {
+        None => {
+            let on = request(json!({"op": "jobs"})).get("jobs").and_then(Value::as_bool) == Some(true);
+            println!("jobs: {}", if on { "enabled" } else { "disabled" });
+            std::process::exit(0);
+        }
+        Some("on") => true,
+        Some("off") => false,
+        Some(other) => fail(&format!("hub jobs: expected on or off, not {other:?}")),
+    };
+    let answer = request(json!({"op": "jobs", "enabled": enabled}));
+    if answer.get("ok").and_then(Value::as_bool) != Some(true) {
+        fail("the hub did not switch jobs");
+    }
+    let ended = answer.get("ended").and_then(Value::as_u64).unwrap_or(0);
+    if enabled {
+        println!(
+            "jobs: enabled — paired devices, swarm members, and Claude sessions can run commands here, as you \
+             (docs/jobs.md). Off again with: claudeship hub jobs off"
+        );
+    } else {
+        println!("jobs: disabled{}", if ended > 0 { format!(" ({ended} running job(s) ended)") } else { String::new() });
+    }
+    std::process::exit(0);
 }
 
 /// `hub stop`, and what it means under the login service.
@@ -328,7 +359,7 @@ fn print_status() -> ! {
     if status.get("jobs").and_then(Value::as_bool) == Some(true) {
         println!("jobs: enabled (swarm members and paired clients can run commands here; docs/jobs.md)");
     } else {
-        println!("jobs: disabled (\"jobs\": true in config.json, then restart the hub, to allow them)");
+        println!("jobs: disabled (from this machine only: claudeship hub jobs on, or the web page's gear menu opened at localhost; docs/jobs.md)");
     }
     let sessions = status
         .get("sessions")

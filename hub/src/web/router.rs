@@ -446,6 +446,7 @@ fn hub_gone() -> Response {
 async fn api_post(State(shared): State<Arc<Shared>>, request: Request) -> Response {
     let gate = gate_of(&request);
     let patience = request.extensions().get::<Patience>().cloned();
+    let remote = request.extensions().get::<super::RemoteIp>().copied();
     if request.method() != Method::POST {
         return other(request.method(), &gate);
     }
@@ -510,6 +511,42 @@ async fn api_post(State(shared): State<Arc<Shared>>, request: Request) -> Respon
             match book.unpair(&id) {
                 Ok(record) => json_response(200, json!({"ok": true, "record": record.to_value()})),
                 Err(e) => json_response(404, json!({"error": e})),
+            }
+        }
+        // The jobs switch: only from this very machine. Remote execution
+        // is opened by someone sitting at it — a browser on it (loopback)
+        // or `claudeship hub jobs` — never from the phone, a browser on
+        // another computer, or a peer's relay (refused in `local_action`
+        // too). The pairing secret alone is not enough here: a Claude
+        // session elsewhere could hold it.
+        "/api/settings" if body.contains_key("jobs") => {
+            // The listener is dual-stack: a local IPv4 client shows up as
+            // ::ffff:127.0.0.1, which only counts once canonicalised.
+            if !remote.is_some_and(|r| super::security::canonical(r.0).is_loopback()) {
+                return json_response(
+                    403,
+                    json!({"error": "jobs are switched only from the machine itself: a browser on it at localhost, or claudeship hub jobs on|off there"}),
+                );
+            }
+            match proxy::target(&shared, body.get("host")) {
+                Err(refusal) => return refusal.response(),
+                Ok(Some(_)) => {
+                    return json_response(
+                        403,
+                        json!({"error": "jobs are switched on a machine from a client paired with it, not through another hub"}),
+                    );
+                }
+                Ok(None) => {}
+            }
+            let Some(enabled) = body.get("jobs").and_then(Value::as_bool) else {
+                return json_response(400, json!({"error": "jobs must be true or false"}));
+            };
+            match ask(&shared.hub, |reply| Command::WebJobs { enabled, reply }).await {
+                Some(ended) => {
+                    shared.state.invalidate();
+                    json_response(200, json!({"ok": true, "jobs": enabled, "ended": ended}))
+                }
+                None => hub_gone(),
             }
         }
         // Another hub's session or settings: forwarded there.
@@ -580,6 +617,11 @@ pub(super) async fn local_action(
             }
         }
         "/api/settings" => {
+            // Only `api_post` switches jobs, for its own paired clients; a
+            // peer relaying `{jobs}` gets no further than this.
+            if body.contains_key("jobs") {
+                return json_response(403, json!({"error": "a peer can't switch jobs on this hub"}));
+            }
             let Some(mode) =
                 string("defaultPermissionMode").filter(|m| HubConfig::permission_modes().contains(&m.as_str()))
             else {

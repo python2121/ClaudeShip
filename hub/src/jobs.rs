@@ -417,8 +417,9 @@ impl Job {
 }
 
 pub struct Jobs {
-    /// `config.jobs`: off, every jobs route is refused.
-    pub enabled: bool,
+    /// `config.jobs`, switchable while the hub runs (`POST /api/settings
+    /// {jobs}`): off, every jobs route is refused.
+    enabled: std::sync::atomic::AtomicBool,
     /// The largest `maxSeconds` a request may ask for.
     pub ceiling: u64,
     root: String,
@@ -436,7 +437,7 @@ impl Jobs {
             .map(Duration::from_secs)
             .unwrap_or(KEEP);
         Arc::new(Jobs {
-            enabled: config.jobs,
+            enabled: std::sync::atomic::AtomicBool::new(config.jobs),
             ceiling: config.jobs_max_seconds.unwrap_or(REQUEST_CEILING).max(1),
             root: config.root.clone(),
             keep,
@@ -447,6 +448,18 @@ impl Jobs {
 
     pub fn root(&self) -> &str {
         &self.root
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The switch, live. Off is total: new jobs are refused from this
+    /// moment and every running one is ended at once (SIGKILL to its
+    /// group, as `hub stop` does); returns how many that was.
+    pub fn set_enabled(&self, on: bool) -> usize {
+        self.enabled.store(on, std::sync::atomic::Ordering::Relaxed);
+        if on { 0 } else { self.kill_all() }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Job>> {
@@ -623,12 +636,15 @@ impl Jobs {
         }
     }
 
-    /// `hub stop`: every running job's group, at once (no one is left to
-    /// escalate).
-    pub fn kill_all(&self) {
+    /// `hub stop` and the switch-off: every running job's group, at once
+    /// (no one is left to escalate). How many there were.
+    pub fn kill_all(&self) -> usize {
+        let mut ended = 0;
         for job in self.lock().iter().filter(|j| j.running()) {
             signal_group(job.pid, libc::SIGKILL);
+            ended += 1;
         }
+        ended
     }
 
     pub fn list(&self) -> Vec<Value> {

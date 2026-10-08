@@ -16,15 +16,33 @@ authorised by the swarm secret (a peer relaying a request) or the hub's
 pairing token (a paired browser, phone, `claudeship`, or the MCP server).
 The swarm already allowed this — a bypass-mode launch on a peer is the same
 power — jobs make it explicit. So jobs are **off by default** and switched
-on per machine in that hub's `config.json`:
+on per machine, live, **only from that machine itself**: `claudeship hub
+jobs on|off` in a terminal there (the hub's socket, this user's alone), or
+the web page's gear menu with the page opened there at `localhost` (the
+hub takes `POST /api/settings {"jobs": true|false}` → `{ok, jobs, ended}`
+only from a loopback connection); or `"jobs": true` in that hub's
+`config.json` for the next start:
 
 ```json
 { "jobs": true, "jobsMaxSeconds": 28800 }
 ```
 
-(read at hub start: `claudeship hub restart` after changing it). `hub
-status` says `jobs: enabled` or `jobs: disabled`; `hub status --json` has
-`"jobs": true|false`. With it off, every jobs route on that hub — the
+Not from the phone (it shows the state, read-only), not from a browser on
+another computer (a non-loopback client is 403, pairing secret or not),
+not through another hub (a `host` naming a peer is 403, and a peer's
+`/peer/api/settings {jobs}` is 403). The point: a Claude session on one
+machine must not be able to open remote execution on another, whatever it
+holds or opens — the one thing that can switch it is something already
+running on that machine, which already has that user's powers there. The
+web switch asks for confirmation. **Off is total**: new jobs are refused
+from that moment and every running job is ended at once (SIGKILL to its
+group, as `hub stop` does); the answer says how many. Every flip is
+logged (`jobs enabled from this machine (claudeship hub jobs)`). The hub
+writes the new value to `config.json`, so it survives a restart;
+`jobsMaxSeconds` is still read at start. `hub status` says `jobs:
+enabled` or `jobs: disabled`; `hub status --json` and `/api/state`
+(top-level and per host in `hosts[]`, and `ship_hosts`) carry `"jobs":
+true|false`. With it off, every jobs route on that hub — the
 client's `/api/jobs…` handled there and a peer's `/peer/api/jobs…` — is
 403 `{"error": "jobs disabled on this host"}`. The switch is about running
 jobs, not relaying them: a hub with jobs off still forwards a request

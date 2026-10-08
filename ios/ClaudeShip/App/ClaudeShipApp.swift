@@ -12,6 +12,7 @@ struct ClaudeShipApp: App {
         //   -pair <pairing link>   pair (add the hub) before the first screen; repeatable
         //   -session <hub id>      open straight onto that session
         //   -expand <project name> start with that project's row expanded
+        //   -settings              open the Settings sheet at once
         //   -swarm                 offer "add to swarm" for the last hub paired
         //   -swarm-confirm         …and press Add
         let arguments = CommandLine.arguments
@@ -24,6 +25,7 @@ struct ClaudeShipApp: App {
         if let i = arguments.firstIndex(of: "-session"), i + 1 < arguments.count {
             RootView.initialSession = arguments[i + 1]
         }
+        if arguments.contains("-settings") { DirectoryView.initialSettings = true }
         if arguments.contains("-swarm") || arguments.contains("-swarm-confirm") {
             RootView.initialSwarm = arguments.contains("-swarm-confirm") ? .confirm : .offer
         }

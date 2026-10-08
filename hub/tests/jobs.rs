@@ -547,6 +547,58 @@ fn jobs_off_is_403_everywhere() {
 }
 
 #[test]
+fn the_jobs_switch_is_live_and_local() {
+    let hub = Hub::start(false);
+    let refused = json!({"error": "jobs disabled on this host"});
+    assert_eq!(hub.post("/api/jobs", json!({"argv": ["/bin/sleep", "30"]})).status, 403);
+    // On, with no restart; the file remembers it for the next one.
+    let r = hub.post("/api/settings", json!({"jobs": true}));
+    assert_eq!((r.status, r.json()), (200, json!({"ok": true, "jobs": true, "ended": 0})));
+    assert_eq!(hub.status()["jobs"], true);
+    assert_eq!(hub.get("/api/state").json()["jobs"], true, "the state says so");
+    let saved: Value = serde_json::from_slice(&std::fs::read(hub.home.join("config.json")).unwrap()).unwrap();
+    assert_eq!(saved["jobs"], true, "persisted");
+    let id = hub.post("/api/jobs", json!({"argv": ["/bin/sleep", "30"]})).json()["id"].as_str().unwrap().to_string();
+    let pid = hub.get(&format!("/api/jobs/{id}")).json()["pid"].as_i64().unwrap();
+    assert!(alive(pid));
+    // Off is total: what runs is ended, what comes is refused.
+    let r = hub.post("/api/settings", json!({"jobs": false}));
+    assert_eq!((r.status, r.json()), (200, json!({"ok": true, "jobs": false, "ended": 1})));
+    eventually(Duration::from_secs(5), "the job's process ends", || !alive(pid));
+    let r = hub.get("/api/jobs");
+    assert_eq!((r.status, r.json()), (403, refused));
+    assert_eq!(hub.status()["jobs"], false);
+    assert_eq!(hub.get("/api/state").json()["jobs"], false);
+    // Only a boolean, only from a client paired with this hub: not a
+    // peer's relay, not a request naming another machine.
+    assert_eq!(hub.post("/api/settings", json!({"jobs": "yes"})).status, 400);
+    let r = hub.http(
+        "POST",
+        "/peer/api/settings",
+        &[format!("Authorization: Bearer {}", hub.secret()), "Content-Type: application/json".into()],
+        &json!({"jobs": true}).to_string(),
+    );
+    assert_eq!((r.status, r.json()), (403, json!({"error": "a peer can't switch jobs on this hub"})));
+    let r = hub.post("/api/settings", json!({"jobs": true, "host": "ffffffff-ffff-4fff-8fff-ffffffffffff"}));
+    assert_ne!(r.status, 200, "naming another host: {}", r.status);
+    assert_eq!(hub.status()["jobs"], false, "neither switched it on");
+    // From a terminal on the machine, over the socket.
+    assert!(text(&hub.cli(&["hub", "jobs"]).stdout).contains("jobs: disabled"));
+    assert!(text(&hub.cli(&["hub", "jobs", "on"]).stdout).contains("jobs: enabled"));
+    assert_eq!(hub.status()["jobs"], true);
+    assert!(text(&hub.cli(&["hub", "jobs", "off"]).stdout).contains("jobs: disabled"));
+    assert_eq!(hub.status()["jobs"], false);
+    assert!(!hub.cli(&["hub", "jobs", "maybe"]).status.success());
+    let log = std::fs::read_to_string(hub.home.join("hub.log")).unwrap_or_default();
+    assert!(
+        log.contains("jobs enabled from this machine (a browser on this machine)")
+            && log.contains("jobs disabled from this machine (a browser on this machine) — 1 running job(s) ended")
+            && log.contains("jobs enabled from this machine (claudeship hub jobs)"),
+        "{log}"
+    );
+}
+
+#[test]
 fn hub_stop_kills_running_jobs() {
     let hub = Hub::start(true);
     let a = hub.argv_job(&[STAND_IN, "sleep", "60"]);

@@ -218,15 +218,6 @@ final class HubStore: Identifiable {
         }
     }
 
-    func setDefaultMode(_ mode: String, host: String? = nil) async {
-        do {
-            try await connection.setDefaultMode(mode, host: host)
-            await refresh()
-        } catch {
-            fail(error, "Couldn't save the setting")
-        }
-    }
-
     func answer(_ approval: HubApproval, allow: Bool, host: String?) async {
         guard !answering.contains(approval.id) else { return }
         answering.insert(approval.id)

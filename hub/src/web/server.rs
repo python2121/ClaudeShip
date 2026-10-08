@@ -117,14 +117,14 @@ pub async fn run(shared: Arc<Shared>) {
             .with_retries(4);
         let _ = socket.set_tcp_keepalive(&keepalive);
         let slot = Arc::new(ConnectionSlot::take(&shared));
-        tokio::spawn(serve(stream, shared.clone(), slot));
+        tokio::spawn(serve(stream, shared.clone(), slot, remote.ip()));
     }
 }
 
 /// One connection: a single request (every response says
 /// `Connection: close`), or a WebSocket upgrade that outlives this task —
 /// the terminal holds its own reference to the connection's slot.
-async fn serve(stream: TcpStream, shared: Arc<Shared>, slot: Arc<ConnectionSlot>) {
+async fn serve(stream: TcpStream, shared: Arc<Shared>, slot: Arc<ConnectionSlot>, remote: std::net::IpAddr) {
     let answered = Arc::new(AtomicBool::new(false));
     let patience = Patience::default();
     let router = router::router(shared.clone());
@@ -135,6 +135,7 @@ async fn serve(stream: TcpStream, shared: Arc<Shared>, slot: Arc<ConnectionSlot>
         tower::service_fn(move |mut request: Request<Incoming>| {
             request.extensions_mut().insert(slot.clone());
             request.extensions_mut().insert(patience.clone());
+            request.extensions_mut().insert(super::RemoteIp(remote));
             let router = router.clone();
             let answered = answered.clone();
             async move {

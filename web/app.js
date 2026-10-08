@@ -796,6 +796,55 @@
       open && recentList(project, data));
   }
 
+  /** The page is open on the hub's own machine (loopback): the only place
+      the hub takes the jobs switch from. */
+  const onTheMachine = () => ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+
+  /** The jobs switch for the machine this page is served from — remote
+      command execution, so it asks twice and the hub takes it only from a
+      browser on that machine itself. Off ends running jobs at once. */
+  function jobsSwitch() {
+    const local = ui.data;
+    if (!local || typeof local.jobs !== 'boolean') return null;  // an older hub
+    const on = local.jobs;
+    const armed = ui.armJobs === !on;
+    const about = on
+      ? 'On: paired devices, swarm members, and Claude sessions can run commands and headless Claude on this machine, as you.'
+      : 'Off: nothing can run commands here through the hub. Turning it on allows paired devices, swarm members, and Claude sessions to run commands and headless Claude on this machine, as you.';
+    if (!onTheMachine()) {
+      return h('div', { class: 'jobs-switch' },
+        h('h4', null, `Jobs on ${local.host}: ${on ? 'on' : 'off'}`),
+        h('p', null, about, ` It is switched only at ${local.host} itself: this page opened there at localhost, or `,
+          h('code', null, 'claudeship hub jobs on|off'), ' in a terminal there.'));
+    }
+    return h('div', { class: 'jobs-switch' },
+      h('h4', null, `Jobs on ${local.host}`),
+      h('p', null, about),
+      armed
+        ? h('div', { class: 'jobs-confirm' },
+            h('span', null, on ? 'Turn jobs off? Any running jobs are ended at once.' : 'Turn jobs on for this machine?'),
+            h('button', { class: `btn small${on ? '' : ' danger'}`, 'data-key': 'jobs:confirm', onclick: () => setJobs(!on) }, on ? 'Turn off' : 'Turn on'),
+            h('button', { class: 'btn small quiet', 'data-key': 'jobs:cancel', onclick: () => { ui.armJobs = undefined; render(true); } }, 'Cancel'))
+        : h('button', {
+            class: 'btn small', 'data-key': 'jobs:arm', 'aria-pressed': String(on),
+            onclick: () => { ui.armJobs = !on; render(true); },
+          }, on ? 'Turn jobs off…' : 'Turn jobs on…'));
+  }
+
+  async function setJobs(enabled) {
+    ui.armJobs = undefined;
+    try {
+      const result = await post('/api/settings', { jobs: enabled });
+      if (ui.data) ui.data.jobs = result.jobs;
+      if (!enabled && result.ended) notify(`Jobs off; ${result.ended} running job${result.ended === 1 ? '' : 's'} ended.`);
+      render(true);
+      poll(true);
+    } catch (error) {
+      notify(`Couldn't change the jobs setting: ${error.message}`);
+      render(true);
+    }
+  }
+
   function settings(data, multi) {
     // An older hub has no swarm: no Computers panel.
     const swarm = Boolean(ui.data && Array.isArray(ui.data.hosts));
@@ -813,6 +862,7 @@
           class: 'menu-item computers-entry', 'data-key': 'computers',
           onclick: () => openComputers(),
         }, h('b', null, 'Computers…'), h('small', null, 'The machines whose sessions this page shows, and adding another')),
+        jobsSwitch(),
         // With several hosts each section carries its own footer line.
         !multi && h('div', { class: 'foot' },
           'Projects are the folders in ', h('code', null, data.rootDisplay), ' on ', h('code', null, data.name), '.')),

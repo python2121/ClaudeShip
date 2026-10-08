@@ -80,27 +80,8 @@ private struct HubSettingsSections: View {
     @State private var swarming = false
 
     var body: some View {
-        Section {
-            ForEach(PermissionMode.known.filter { store.state?.permissionModes.contains($0.mode) ?? true }, id: \.mode) { entry in
-                Button {
-                    Task { await store.setDefaultMode(entry.mode) }
-                } label: {
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: entry.mode == store.state?.defaultPermissionMode ? "largecircle.fill.circle" : "circle")
-                            .foregroundStyle(entry.mode == store.state?.defaultPermissionMode ? Color.accentColor : .secondary)
-                            .padding(.top, 2)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.name).foregroundStyle(.primary)
-                            Text(entry.about).font(.footnote).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-        } header: {
-            Text("New sessions start in")
-        } footer: {
-            Text("Used by New session and Resume. The arrow beside New session picks a different mode for one launch.")
-        }
+        // No "start in" choice: the phone launches every session in auto,
+        // and the mode is changed inside the session (the key bar's mode key).
         Section("Hub") {
             LabeledContent("Mac", value: store.state?.host ?? store.hostName)
             LabeledContent("Address", value: store.connection.displayAddress)
@@ -117,6 +98,22 @@ private struct HubSettingsSections: View {
                 SwarmView(joining: store, dismissLabel: "Cancel") { swarming = false }
                     .navigationTitle("Swarm")
                     .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        // Remote command execution on that machine. Read-only here on
+        // purpose: the hub takes the switch only from the machine itself
+        // (a browser there at localhost, or claudeship hub jobs), never
+        // from a phone, so nothing that merely holds the pairing can open it.
+        if let jobs = store.state?.jobs {
+            Section {
+                LabeledContent("Jobs", value: jobs ? "On" : "Off")
+            } header: {
+                Text("Jobs on \(store.state?.host ?? store.hostName)")
+            } footer: {
+                Text((jobs
+                      ? "Paired devices, swarm members, and Claude sessions can run commands and headless Claude on that machine, as you."
+                      : "Nothing can run commands on that machine through the hub.")
+                     + " Switched only at the machine itself: its web page opened there at localhost, or claudeship hub jobs on|off in a terminal there.")
             }
         }
         Section {
