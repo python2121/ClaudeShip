@@ -36,7 +36,7 @@ use crate::frame::PROTOCOL;
 use crate::hub::log;
 use crate::config::HubConfig;
 use crate::web::security::{constant_time_equals, is_loopback, is_tailnet};
-use crate::{net, paths, procs};
+use crate::{net, paths};
 
 pub use gossip::{INVITE_BUDGET, Swarm};
 
@@ -417,6 +417,9 @@ pub struct Route {
 /// The swarm's local state: no network in here.
 pub struct Book {
     port: u16,
+    /// What to call this machine in our record (`config.name`, else the
+    /// hostname), refreshed with the rest of it.
+    name: String,
     advertise_loopback: bool,
     secret: RwLock<String>,
     /// Bumped whenever the secret changes: a peer's terminal admitted
@@ -428,7 +431,7 @@ pub struct Book {
 impl Book {
     /// Load `swarm.secret` and `peers.json` from the hub's home, minting
     /// what is missing (a swarm of one).
-    pub fn load(port: u16) -> Book {
+    pub fn load(port: u16, name: String) -> Book {
         let secret = std::fs::read_to_string(paths::swarm_secret())
             .ok()
             .map(|s| s.trim().to_string())
@@ -464,6 +467,7 @@ impl Book {
         expire(&mut known, now_ms());
         let book = Book {
             port,
+            name,
             advertise_loopback: std::env::var_os(ADVERTISE_LOOPBACK_ENV).is_some_and(|v| v == "1"),
             secret: RwLock::new(secret),
             secret_epoch: tokio::sync::watch::channel(0).0,
@@ -542,7 +546,7 @@ impl Book {
                 addresses.push(SocketAddr::from((ip, self.port)).to_string());
             }
         }
-        inner.me.name = procs::hostname();
+        inner.me.name = self.name.clone();
         inner.me.addresses = addresses;
         inner.me.protocol = PROTOCOL;
         inner.me.build = BUILD.into();

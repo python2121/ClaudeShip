@@ -502,7 +502,7 @@ pub fn build(snapshot: &Snapshot) -> (Value, Reconciliation) {
         .map(|i| projects[i].clone())
         .collect();
     let state = json!({
-        "host": procs::hostname(),
+        "host": config.display_name(),
         "protocol": PROTOCOL,
         "approvalsSupported": true,
         "root": root,

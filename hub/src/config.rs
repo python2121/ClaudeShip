@@ -30,6 +30,9 @@ pub struct HubConfig {
     pub jobs: bool,
     /// Raises the largest `maxSeconds` a job may ask for (default 14 400).
     pub jobs_max_seconds: Option<u64>,
+    /// What this machine is called on every surface (the state's `host`,
+    /// the swarm's record of us). None: the hostname.
+    pub name: Option<String>,
 }
 
 /// What `claude --permission-mode` accepts (2.1.289).
@@ -74,7 +77,15 @@ impl HubConfig {
                 .collect(),
             jobs: false,
             jobs_max_seconds: None,
+            name: None,
         }
+    }
+
+    /// The name this machine presents: `config.name`, else the hostname.
+    pub fn display_name(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(crate::procs::hostname)
     }
 
     pub fn parse(data: &[u8]) -> HubConfig {
@@ -115,6 +126,13 @@ impl HubConfig {
         {
             config.jobs_max_seconds = Some(seconds as u64);
         }
+        if let Some(name) = obj.get("name").and_then(Value::as_str) {
+            // One line, trimmed, bounded: it is printed everywhere.
+            let name: String = name.trim().chars().take(64).collect();
+            if !name.is_empty() && !name.chars().any(char::is_control) {
+                config.name = Some(name);
+            }
+        }
         config
     }
 
@@ -140,6 +158,9 @@ impl HubConfig {
         obj.insert("jobs", self.jobs.into());
         if let Some(seconds) = self.jobs_max_seconds {
             obj.insert("jobsMaxSeconds", seconds.into());
+        }
+        if let Some(name) = &self.name {
+            obj.insert("name", name.clone().into());
         }
         let data = serde_json::to_vec_pretty(&obj).map_err(std::io::Error::other)?;
         let mut temp = path.as_os_str().to_owned();
@@ -246,9 +267,16 @@ mod tests {
     #[test]
     fn parses_known_keys() {
         let c = HubConfig::parse(
-            br#"{"port": 9000, "defaultPermissionMode": "plan", "root": "/tmp/projects"}"#,
+            br#"{"port": 9000, "defaultPermissionMode": "plan", "root": "/tmp/projects", "name": "  Steam Machine "}"#,
         );
         assert_eq!(c.port, 9000, "config: port");
+        assert_eq!(c.name.as_deref(), Some("Steam Machine"), "config: name, trimmed");
+        assert_eq!(c.display_name(), "Steam Machine", "config: the name is what we present");
+        assert_eq!(
+            HubConfig::fallback().display_name(),
+            crate::procs::hostname(),
+            "config: no name means the hostname"
+        );
         assert_eq!(c.default_permission_mode, "plan", "config: permission mode");
         assert_eq!(c.root, "/tmp/projects", "config: root");
         assert!(
@@ -275,9 +303,14 @@ mod tests {
             "config: unknown mode falls back to auto"
         );
         let c = HubConfig::parse(
-            br#"{"port": "80", "root": "", "allowedHosts": "x", "tunnelInterfaces": [1]}"#,
+            br#"{"port": "80", "root": "", "allowedHosts": "x", "tunnelInterfaces": [1], "name": "  "}"#,
         );
         assert_eq!(c, HubConfig::fallback(), "wrong types fall back key by key");
+        assert_eq!(
+            HubConfig::parse(br#"{"name": "two\nlines"}"#).name,
+            None,
+            "a name with a control character is ignored"
+        );
         assert_eq!(
             HubConfig::parse(br#"{"port": 8080.0}"#).port,
             8080,
@@ -353,6 +386,7 @@ mod tests {
             tunnel_interfaces: vec!["utun".into(), "wg".into()],
             jobs: true,
             jobs_max_seconds: Some(20_000),
+            name: Some("Steam Machine".into()),
         };
         config.save(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -361,6 +395,7 @@ mod tests {
             "defaultPermissionMode",
             "jobs",
             "jobsMaxSeconds",
+            "name",
             "port",
             "root",
             "tunnelInterfaces",

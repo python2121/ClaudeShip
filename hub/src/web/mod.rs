@@ -59,7 +59,7 @@ impl Shared {
             epoch: watch::channel(0).0,
             connections: AtomicUsize::new(0),
             state: Arc::default(),
-            swarm: crate::swarm::Swarm::new(config.port),
+            swarm: crate::swarm::Swarm::new(config.port, config.display_name()),
             jobs: crate::jobs::Jobs::new(config),
         })
     }

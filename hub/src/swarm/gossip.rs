@@ -44,9 +44,9 @@ enum Outcome {
 }
 
 impl Swarm {
-    pub fn new(port: u16) -> Arc<Swarm> {
+    pub fn new(port: u16, name: String) -> Arc<Swarm> {
         Arc::new(Swarm {
-            book: Arc::new(Book::load(port)),
+            book: Arc::new(Book::load(port, name)),
             client: PeerClient::default(),
         })
     }

@@ -85,7 +85,10 @@ browsers keep working); Linux `$XDG_STATE_HOME/claudeship`, else
 `~/.local/state/claudeship`. Inside: `hub.sock` (0600, created under a 0177 umask so there is no window before the chmod), `hub.lock` (flock,
 0600), `hub.log` (rotated to `hub.log.1` past 2 MB at a start),
 `config.json` (`jobs`, default false, and `jobsMaxSeconds` switch on
-and cap jobs — `jobs.md`), `token` (the pairing secret: 64 hex characters from
+and cap jobs — `jobs.md`; `name` is what this machine is called on every
+surface — the state's `host`, the swarm's record of it, so peers, the
+phone, and the web page all show it — else the hostname; one line, at
+most 64 characters, read at start), `token` (the pairing secret: 64 hex characters from
 `getrandom`, written to `token.new` and renamed, 0600), `approvals.sock`
 (0600, bound under the same umask as `hub.sock`), `swarm.secret` and
 `peers.json` (the swarm, below; both 0600, written the same atomic way). `CLAUDESHIP_CMD`
