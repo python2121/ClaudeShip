@@ -9,7 +9,8 @@ only the phone's shell over the same hub API.
 `ClaudeShip` is a SwiftUI iPhone app — a hand-written Xcode project
 (`ClaudeShip.xcodeproj`, synchronized root folder, so adding a file needs no
 project edit) that does what the web app does, natively: the project
-directory with live sessions, launch/resume in a chosen permission mode,
+directory with live sessions, launch/resume (always in auto mode; the
+session's permission mode is cycled from the terminal's key bar),
 settings, and a terminal attached to a session over the hub's WebSocket.
 The terminal is [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)
 (pinned to 1.20.0; its build plugin needs `-skipPackagePluginValidation`,
@@ -156,7 +157,9 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
   mouse protocol the program negotiated) with scroll-view-style momentum.
   `linesPerWheelTick` is the feel knob (1: measured, Claude Code scrolls one line per wheel event, answering in 3–26 ms on the Mac — what's left of the lag is the tailnet round trip, Claude's per-event redraw, and SwiftTerm's 60 fps coalescing). For truly local, native scrolling, a session can run Claude's classic non-fullscreen TUI (`/tui default` in the session, or `--settings '{"tui":"default"}'` at launch): the transcript then lives in the terminal's own scrollback. With reporting off, SwiftTerm's
   native scrollback scrolling is back. `KeyBar` is the row above the
-  keyboard (esc, tab, ⇧tab, ^C, arrows, pgup/pgdn, ⏎); arrows honour
+  keyboard (mode, esc, tab, ⇧tab, ^C, arrows, pgup/pgdn, ⏎; `mode` is
+  shift+tab with a name — Claude Code cycles its permission mode on it,
+  and launches offer no mode choice); arrows honour
   application-cursor mode. A keyboard-down key is pinned at its left,
   outside the scrolling row; it, a downward swipe on the bar, and
   `keyboardDismissMode = .interactive` on the terminal (effective only

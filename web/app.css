@@ -342,11 +342,11 @@ button.session-go:hover { text-decoration: underline; }
 .btn.quiet { background: none; color: var(--dim); font-weight: 550; padding: 0 9px; }
 .btn.quiet:hover { background: var(--surface-2); color: var(--text); filter: none; }
 .btn[disabled] { opacity: 0.55; cursor: default; }
-.launch .btn.main { border-radius: 9px 0 0 9px; }
-.launch .btn.caret {
-  border-radius: 0 9px 9px 0; padding: 0 7px;
-  box-shadow: inset 1px 0 0 color-mix(in srgb, currentColor 22%, transparent);
+.card-title .btn.plus {
+  flex: none; width: 26px; height: 26px; padding: 0; justify-content: center;
+  border-radius: 7px; background: var(--accent); color: var(--accent-text);
 }
+.card-title .btn.plus:hover { filter: brightness(1.07); }
 
 .menu {
   position: absolute; z-index: 30;

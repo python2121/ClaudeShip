@@ -5,10 +5,14 @@ import UIKit
 /// scrolls. A downward swipe anywhere on the bar does the same.
 final class KeyBar: UIInputView, UIGestureRecognizerDelegate {
     enum Key: CaseIterable {
-        case escape, tab, shiftTab, controlC, up, down, left, right, pageUp, pageDown, enter
+        /// `mode` cycles Claude Code's permission mode: it is shift+tab
+        /// with a name, first in the row (the launch has no mode choice;
+        /// the session's mode is changed here).
+        case mode, escape, tab, shiftTab, controlC, up, down, left, right, pageUp, pageDown, enter
 
         var label: String {
             switch self {
+            case .mode: return "mode"
             case .escape: return "esc"
             case .tab: return "tab"
             case .shiftTab: return "⇧tab"
@@ -26,6 +30,7 @@ final class KeyBar: UIInputView, UIGestureRecognizerDelegate {
         func bytes(applicationCursor: Bool) -> [UInt8] {
             let arrow = applicationCursor ? "\u{1b}O" : "\u{1b}["
             switch self {
+            case .mode: return Array("\u{1b}[Z".utf8)
             case .escape: return [0x1b]
             case .tab: return [0x09]
             case .shiftTab: return Array("\u{1b}[Z".utf8)
@@ -89,6 +94,7 @@ final class KeyBar: UIInputView, UIGestureRecognizerDelegate {
             var config = Self.keyConfiguration()
             config.title = key.label
             let button = UIButton(configuration: config)
+            if key == .mode { button.accessibilityLabel = "Cycle the permission mode" }
             button.addAction(UIAction { [weak self] _ in self?.onKey?(key) }, for: .touchUpInside)
             stack.addArrangedSubview(button)
             if firstKey == nil { firstKey = button }

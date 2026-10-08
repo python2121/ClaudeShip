@@ -9,13 +9,6 @@
   // this page can be newer than the hub serving it.
   const PROTOCOL = 3;
 
-  const MODES = {
-    auto: ['Auto', "Works without asking, behind Claude's own safety checks."],
-    acceptEdits: ['Accept edits', 'Edits files without asking. Still asks before running commands.'],
-    plan: ['Plan', 'Reads and plans; changes nothing until you approve.'],
-    manual: ['Manual', 'Asks before every edit and command.'],
-    bypassPermissions: ['Bypass permissions', 'Never asks. Everything is allowed.'],
-  };
   const STATUS = {
     busy: 'Working',
     waiting: 'Needs you',
@@ -339,7 +332,9 @@
     render(true);
     try {
       const body = { path };
-      if (mode) body.permissionMode = mode;
+      // Every launch from the page is auto; the mode is changed inside the
+      // session (Mode in the terminal bar cycles it, as shift+tab does).
+      body.permissionMode = mode || 'auto';
       if (resume) body.resume = resume;
       const { id } = await post('/api/launch', withHost(view, body));
       location.hash = termHash(id, view.hostId);
@@ -352,16 +347,6 @@
     }
   }
 
-  async function setDefaultMode(view, mode) {
-    try {
-      await post('/api/settings', withHost(view, { defaultPermissionMode: mode }));
-      view.defaultPermissionMode = mode;
-      if (view.local && ui.data) ui.data.defaultPermissionMode = mode;
-    } catch (error) {
-      notify(`Couldn't save the setting: ${failure(error, view)}`);
-    }
-    render(true);
-  }
 
   // ── Directory rendering ──────────────────────────────────
 
@@ -605,17 +590,26 @@
         h('div', { class: 'card-title' },
           h('h3', null, project.name),
           count > 1 && h('span', { class: 'instances' }, `${count} running`),
-          project.branch && branchTag(project.branch)),
+          project.branch && branchTag(project.branch),
+          plusButton(project, data)),
         h('div', { class: 'card-path' }, tilde(project.path, data))),
       h('div', { class: 'sessions' }, project.sessions.map((s) => sessionRow(s, project, data))),
-      h('div', { class: 'card-foot' },
-        launchControl(project, data, true),
+      project.recent.length > 0 && h('div', { class: 'card-foot' },
         h('span', { class: 'spacer' }),
-        project.recent.length > 0 && h('button', {
+        h('button', {
           class: 'btn quiet', 'aria-expanded': String(open), 'data-key': `earlier:${okey(data, project.path)}`,
           onclick: () => { toggleOpen(okey(data, project.path)); },
         }, 'Earlier', icon(open ? 'down' : 'right'))),
       open && recentList(project, data));
+  }
+
+  /** The "+" at the end of a running project's title: another session there. */
+  function plusButton(project, data) {
+    return h('button', {
+      class: 'btn small plus', disabled: ui.launching || data.down, 'data-key': `new:${okey(data, project.path)}`,
+      'aria-label': `New session in ${project.name}`, title: 'New session here (auto mode)',
+      onclick: (event) => { event.stopPropagation(); launch(data, project.path); },
+    }, icon('plus'));
   }
 
   function sessionRow(session, project, data) {
@@ -626,6 +620,7 @@
     if (session.status === 'waiting' && session.waitingFor) meta.push(` — ${session.waitingFor}`);
     const extras = [];
     if (session.since) extras.push(age(session.since, data));
+    if (!session.attachable) extras.push(session.background ? 'Background' : 'Terminal only');
     if (!project) extras.push(tilde(session.cwd, data));
     else if (session.sub) extras.push(session.sub);
     if (session.branch && (!project || session.branch !== project.branch)) extras.push(session.branch);
@@ -659,7 +654,7 @@
             title: 'Open this session\'s terminal',
             onclick: (event) => { event.stopPropagation(); go(); },
           }, 'Open', icon('right'))
-        : h('span', { class: 'session-go' }, session.background ? 'Background' : 'Terminal only');
+        : null;
       body[2] = approvalBox(session, approvals, data, open);
       return h('div', { class: 'session approving' }, body);
     }
@@ -676,8 +671,7 @@
     const why = session.background
       ? 'A background session run by Claude Code itself.'
       : 'Started directly in a terminal, so it can only be used there. Sessions started here or with claudeship can be opened from anywhere.';
-    return h('div', { class: 'session external', title: why }, body,
-      h('span', { class: 'session-go' }, session.background ? 'Background' : 'Terminal only'));
+    return h('div', { class: 'session external', title: why }, body);
   }
 
   const autoApproveActive = (rule, view) =>
@@ -755,30 +749,16 @@
     }
   }
 
+  /** "New session" in an idle project's row. Always auto: the mode is
+   *  changed inside the session, not chosen at launch. */
   function launchControl(project, data, primary) {
     const mkey = okey(data, project.path);
-    const open = ui.menu === mkey;
-    const tone = primary ? ' primary' : '';
     return h('div', { class: 'launch', onclick: (event) => event.stopPropagation() },
       h('button', {
-        class: `btn main${tone}`, disabled: ui.launching || data.down, 'data-key': `new:${mkey}`,
-        title: `Start in ${MODES[data.defaultPermissionMode]?.[0] || data.defaultPermissionMode} mode`,
+        class: `btn main${primary ? ' primary' : ''}`, disabled: ui.launching || data.down, 'data-key': `new:${mkey}`,
+        title: 'New session here (auto mode)',
         onclick: () => launch(data, project.path),
-      }, icon('plus'), 'New session'),
-      h('button', {
-        class: `btn caret${tone}`, disabled: data.down, 'aria-label': 'Choose a permission mode', 'aria-expanded': String(open),
-        'data-key': `caret:${mkey}`,
-        onclick: () => { ui.menu = open ? null : mkey; render(true); },
-      }, icon('down')),
-      open && h('div', { class: `menu${primary ? '' : ' right'}`, role: 'menu' },
-        h('div', { class: 'menu-label' }, 'Start in'),
-        Object.entries(MODES).filter(([mode]) => data.permissionModes.includes(mode)).map(([mode, [name, about]]) =>
-          h('button', {
-            class: `menu-item${mode === 'bypassPermissions' ? ' danger' : ''}`, role: 'menuitem',
-            'data-key': `mode:${mkey}:${mode}`,
-            onclick: () => launch(data, project.path, mode),
-          }, h('b', null, name), mode === data.defaultPermissionMode && h('span', { class: 'tag' }, 'Default'),
-            h('small', null, about)))));
+      }, icon('plus'), 'New session'));
   }
 
   function recentList(project, data) {
@@ -833,15 +813,6 @@
           class: 'menu-item computers-entry', 'data-key': 'computers',
           onclick: () => openComputers(),
         }, h('b', null, 'Computers…'), h('small', null, 'The machines whose sessions this page shows, and adding another')),
-        h('h4', null, 'New sessions start in'),
-        h('p', null, multi ? `For ${data.name}. Used by New session and Resume on this page; other machines keep their own setting. The arrow beside New session picks a different mode for one launch.` : 'Used by New session and Resume on this page. The arrow beside New session picks a different mode for one launch.'),
-        h('div', { class: 'options', role: 'radiogroup' },
-          Object.entries(MODES).filter(([mode]) => data.permissionModes.includes(mode)).map(([mode, [name, about]]) =>
-            h('button', {
-              class: 'option', role: 'radio', 'aria-checked': String(mode === data.defaultPermissionMode),
-              'data-key': `default:${mode}`,
-              onclick: () => setDefaultMode(data, mode),
-            }, h('span', { class: 'dot' }), h('b', null, name), h('small', null, about)))),
         // With several hosts each section carries its own footer line.
         !multi && h('div', { class: 'foot' },
           'Projects are the folders in ', h('code', null, data.rootDisplay), ' on ', h('code', null, data.name), '.')),
@@ -1073,6 +1044,13 @@
     const glyph = h('span', { class: 'glyph' });
     const state = h('span', { class: 'term-state' });
     const end = h('button', { class: 'btn', onclick: () => endSession() }, 'End');
+    // Claude Code cycles its permission mode on shift+tab; this is that
+    // key with a name, beside End.
+    const modeBtn = h('button', {
+      class: 'btn mode', title: 'Cycle the permission mode (shift+tab)', 'aria-label': 'Cycle the permission mode',
+      onpointerdown: (event) => event.preventDefault(),
+      onclick: () => { send(encoder.encode('\x1b[Z')); t.term.focus(); },
+    }, 'Mode');
     const keys = h('div', { class: 'keys' }, [
       ['esc', '\x1b'], ['tab', '\t'], ['⇧tab', '\x1b[Z'], ['^C', '\x03'],
       ['↑', 'A'], ['↓', 'B'], ['←', 'D'], ['→', 'C'],
@@ -1107,7 +1085,7 @@
     const bar = h('div', { class: 'term-bar' },
       back,
       h('div', { class: 'term-id' }, glyph, h('div', { class: 'term-names' }, project, title)),
-      state, end, controls);
+      state, modeBtn, end, controls);
     const page = h('div', { class: 'term-page', 'data-id': id },
       bar,
       h('div', { class: 'term-body' }, host, note, over),

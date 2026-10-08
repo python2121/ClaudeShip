@@ -343,10 +343,12 @@ private struct HostSections: View {
         }
         Group {
             let running = host.projectList.filter { !$0.sessions.isEmpty && matches($0) }
-            if running.isEmpty && filter.isEmpty {
+            // Only when nothing at all runs on the machine — a session
+            // outside the projects folder counts, as on the web page.
+            if running.isEmpty && host.elsewhereList.isEmpty && filter.isEmpty {
                 Section("Running") {
                     Text(host.isReachable
-                         ? "Nothing is running. Start a session below, or run claudeship in a terminal on the Mac."
+                         ? "Nothing is running. Start a session below, or run claudeship in a terminal on \(headed ? host.displayName : "the Mac")."
                          : "Nothing was running when it was last seen.")
                         .foregroundStyle(.secondary)
                 }
@@ -354,7 +356,6 @@ private struct HostSections: View {
             ForEach(running) { project in
                 Section {
                     ForEach(project.sessions) { session in SessionRow(session: session, project: project) }
-                    if !DebugOff.contains("launch") { launchRow(project) }
                     // A running project's earlier conversations sit
                     // behind a toggle, as on the web page's card.
                     if !project.recent.isEmpty {
@@ -494,7 +495,13 @@ private struct HubTitle: View {
     }
 }
 
+/// A running project's name over its card. The "+" at its end starts
+/// another session in the project (always in auto mode), in place of the
+/// launch row an idle project shows when expanded.
 private struct ProjectHeader: View {
+    @Environment(HubStore.self) private var store
+    @Environment(\.navigate) private var navigate
+    @Environment(\.hostScope) private var scope
     let project: HubProject
     let running: Bool
 
@@ -510,6 +517,20 @@ private struct ProjectHeader: View {
             if let branch = project.branch {
                 Label(branch, systemImage: "arrow.triangle.branch").font(.caption.monospaced()).textCase(nil)
                     .foregroundStyle(.secondary).lineLimit(1)
+            }
+            if running && !DebugOff.contains("launch") {
+                Button {
+                    Task { if let id = await store.launch(path: project.path, mode: "auto", host: scope.target) { navigate(store.route(id, host: scope.target)) } }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 22, height: 22)
+                        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .disabled(store.launching)
+                .accessibilityLabel("New session in \(project.name)")
             }
         }
     }
@@ -595,12 +616,6 @@ struct SessionRow: View {
                 Text(meta).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 6)
-            if !session.attachable {
-                Text(session.background ? "Background" : "Terminal only")
-                    .font(.caption2).foregroundStyle(.tertiary)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.3)))
-            }
         }
         .padding(.vertical, 2)
     }
@@ -677,6 +692,8 @@ struct SessionRow: View {
         var parts = [StatusText.label(session.status)]
         if session.status == "waiting", let what = session.waitingFor { parts[0] += " — \(what)" }
         if let since = session.since { parts.append(Ago.age(ms: since, now: store.now(for: scope.target))) }
+        // Not the hub's to attach: where it lives instead, in the caption.
+        if !session.attachable { parts.append(session.background ? "Background" : "Terminal only") }
         if project == nil { parts.append(session.cwd) } else if let sub = session.sub { parts.append(sub) }
         if let branch = session.branch, branch != project?.branch { parts.append(branch) }
         if session.viewers > 0 { parts.append("\(session.viewers) attached") }
@@ -803,7 +820,8 @@ private struct EarlierRow: View {
     }
 }
 
-/// "New session" with the mode menu beside it.
+/// "New session" in an idle project's expanded row. Always auto mode: the
+/// phone starts every session in auto (no mode menu), like its quick "+".
 private struct LaunchRow: View {
     @Environment(HubStore.self) private var store
     @Environment(\.navigate) private var navigate
@@ -813,7 +831,7 @@ private struct LaunchRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Button {
-                Task { if let id = await store.launch(path: project.path, host: scope.target) { navigate(store.route(id, host: scope.target)) } }
+                Task { if let id = await store.launch(path: project.path, mode: "auto", host: scope.target) { navigate(store.route(id, host: scope.target)) } }
             } label: {
                 Label("New session", systemImage: "plus")
                     .font(.subheadline.weight(.semibold))
@@ -823,36 +841,10 @@ private struct LaunchRow: View {
             }
             .buttonStyle(.plain)
             .disabled(store.launching)
-            Menu {
-                Section("Start in") {
-                    ForEach(PermissionMode.known.filter { store.state?.permissionModes.contains($0.mode) ?? true }, id: \.mode) { entry in
-                        Button {
-                            Task { if let id = await store.launch(path: project.path, mode: entry.mode, host: scope.target) { navigate(store.route(id, host: scope.target)) } }
-                        } label: {
-                            if entry.mode == defaultMode {
-                                Label(entry.name, systemImage: "checkmark")
-                            } else {
-                                Text(entry.name)
-                            }
-                        }
-                    }
-                }
-            } label: {
-                Image(systemName: "chevron.down")
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.horizontal, 10).padding(.vertical, 9)
-                    .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
             Spacer()
-            if let mode = defaultMode {
-                Text(PermissionMode.name(mode)).font(.caption).foregroundStyle(.tertiary)
-            }
         }
         .padding(.vertical, 2)
     }
-
-    /// The machine's own default (each swarm host keeps one).
-    private var defaultMode: String? { scope.defaultMode ?? store.state?.defaultPermissionMode }
 }
 
 private struct ResumeRow: View {
@@ -864,7 +856,7 @@ private struct ResumeRow: View {
 
     var body: some View {
         Button {
-            Task { if let id = await store.launch(path: project.path, resume: conversation.sessionId, host: scope.target) { navigate(store.route(id, host: scope.target)) } }
+            Task { if let id = await store.launch(path: project.path, mode: "auto", resume: conversation.sessionId, host: scope.target) { navigate(store.route(id, host: scope.target)) } }
         } label: {
             HStack {
                 Text(conversation.title).font(.subheadline).foregroundStyle(.primary).lineLimit(1)
