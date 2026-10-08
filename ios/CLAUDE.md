@@ -109,8 +109,9 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
 - **Approvals** (protocol 3): a session entry carries `sessionId`,
   `approvals: [{id, tool, summary, detail, receivedAt}]`, and
   `autoApprove: {until | session}`. A row with pendings stops being a
-  NavigationLink (its own buttons must take their taps; the title still
-  opens the session): Approve / Deny / ⋯ sit where the status line was,
+  NavigationLink (its own buttons must take their taps): the title area
+  and a trailing bordered "Open ›" button beside the answers both open the
+  session, so attaching stays one obvious tap. Approve / Deny / ⋯ sit where the status line was,
   the first prompt's `summary` (which the hub already prefixes with the
   tool's name, "Bash: npm test") is the caption, tapping it opens
   `ApprovalDetail` (the full detail, Approve/Deny at the bottom). ⋯ holds

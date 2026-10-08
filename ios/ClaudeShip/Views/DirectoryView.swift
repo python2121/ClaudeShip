@@ -61,28 +61,13 @@ struct DirectoryView: View {
             } else {
                 ToolbarItem(placement: .topBarLeading) { tally }
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                // The quick "+": a session in the Mac's home directory, in
-                // auto mode — the New session button without the words or
-                // the mode menu, for work that isn't about any one project.
-                // With two machines or more in view it asks which.
-                if !quickTargets.isEmpty {
-                    Button {
-                        if quickTargets.count > 1 { choosingHost = true } else if let target = quickTargets.first { quick(target) }
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(width: 30, height: 30)
-                            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .foregroundStyle(.white)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(quickTargets.contains { $0.store.launching })
-                    .accessibilityLabel("New session in your home folder")
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { settings = true } label: { Image(systemName: "gearshape") }
+            // The "+" and the gear sit on the bar itself, no shared capsule.
+            if #available(iOS 26, *) {
+                ToolbarItem(placement: .topBarTrailing) { quickButton }.sharedBackgroundVisibility(.hidden)
+                ToolbarItem(placement: .topBarTrailing) { settingsButton }.sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .topBarTrailing) { quickButton }
+                ToolbarItem(placement: .topBarTrailing) { settingsButton }
             }
         }
         .confirmationDialog("New session in the home folder on", isPresented: $choosingHost, titleVisibility: .visible) {
@@ -92,6 +77,31 @@ struct DirectoryView: View {
         }
         .sheet(isPresented: $settings) { SettingsView() }
         .sheet(item: $repairing) { store in PairView(asSheet: true, refused: store) }
+    }
+
+    /// The quick "+": a session in the Mac's home directory, in auto mode —
+    /// the New session button without the words or the mode menu, for work
+    /// that isn't about any one project. With two machines or more in view
+    /// it asks which.
+    @ViewBuilder private var quickButton: some View {
+        if !quickTargets.isEmpty {
+            Button {
+                if quickTargets.count > 1 { choosingHost = true } else if let target = quickTargets.first { quick(target) }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 30, height: 30)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .disabled(quickTargets.contains { $0.store.launching })
+            .accessibilityLabel("New session in your home folder")
+        }
+    }
+
+    private var settingsButton: some View {
+        Button { settings = true } label: { Image(systemName: "gearshape") }
     }
 
     /// A machine the quick "+" can start a session on, through a hub.
@@ -409,7 +419,8 @@ private struct ProjectHeader: View {
 
 /// A session: tap to open it when the hub owns it; otherwise just status.
 /// With a permission prompt pending, Approve / Deny / ⋯ take the status
-/// line's place and the prompt's summary is the caption (tap: the detail).
+/// line's place and the prompt's summary is the caption (tap: the detail);
+/// the title and a trailing Open button still attach to the session.
 struct SessionRow: View {
     @Environment(HubStore.self) private var store
     @Environment(\.navigate) private var navigate
@@ -503,16 +514,20 @@ struct SessionRow: View {
             glyph
             VStack(alignment: .leading, spacing: 6) {
                 if let hubId {
-                    Button { navigate(store.route(hubId, host: scope.target)) } label: { title }
-                        .buttonStyle(.plain)
+                    // The name area opens the session, as a normal row does.
+                    Button { navigate(store.route(hubId, host: scope.target)) } label: {
+                        title.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens the session's terminal")
                 } else {
                     title
                 }
                 HStack(spacing: 8) {
                     Button("Approve") { Task { await store.answer(approval, allow: true, host: scope.target) } }
-                        .buttonStyle(.borderedProminent).tint(Palette.green)
+                        .buttonStyle(.borderedProminent).tint(Palette.green).disabled(busy)
                     Button("Deny") { Task { await store.answer(approval, allow: false, host: scope.target) } }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.bordered).disabled(busy)
                     if session.sessionId != nil {
                         Menu {
                             Button("Approve all for 5 minutes") { Task { await store.autoApprove(session, rule: "5m", host: scope.target) } }
@@ -526,14 +541,28 @@ struct SessionRow: View {
                                 .background(Color.secondary.opacity(0.15), in: Capsule())
                         }
                         .accessibilityLabel("More approval options")
+                        .disabled(busy)
                     }
                     if more > 0 {
-                        Text("+\(more) more").font(.caption).foregroundStyle(.secondary)
+                        Text("+\(more) more").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    if let hubId {
+                        // The attach a normal row gets from its whole-row link,
+                        // here as a visible control beside the answers.
+                        Spacer(minLength: 0)
+                        Button { navigate(store.route(hubId, host: scope.target)) } label: {
+                            HStack(spacing: 3) {
+                                Text("Open")
+                                Image(systemName: "chevron.right").font(.caption2.weight(.bold))
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Open session")
+                        .accessibilityHint("Attaches to the session's terminal")
                     }
                 }
                 .controlSize(.small)
                 .font(.subheadline.weight(.semibold))
-                .disabled(busy)
                 Button { detail = approval } label: {
                     Text(approval.caption.isEmpty ? "Permission requested" : approval.caption)
                         .font(.footnote.monospaced()).foregroundStyle(.secondary)

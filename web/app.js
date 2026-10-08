@@ -558,17 +558,30 @@
     const body = [
       h('span', { class: `glyph ${session.status}` }),
       h('span', { class: `session-title${untitled ? ' untitled' : ''}` }, title, bolt),
-      approvals.length ? approvalBox(session, approvals, data) : h('span', { class: 'session-meta' }, meta),
+      approvals.length ? null : h('span', { class: 'session-meta' }, meta),
     ];
     if (approvals.length) {
-      // Buttons can't nest in buttons: the row is a plain box and Open its own button.
-      return h('div', { class: 'session approving' }, body,
-        session.attachable
-          ? h('button', {
-              class: 'session-go', 'data-key': `session:${data.hostId || ''}:${session.key}`,
-              onclick: () => { location.hash = termHash(session.hubId, data.hostId); },
-            }, 'Open', icon('right'))
-          : h('span', { class: 'session-go' }, session.background ? 'Background' : 'Terminal only'));
+      // Buttons can't nest in buttons: the row is a plain box. Open is its own
+      // button beside Approve / Deny, and the title area opens the session too.
+      const go = () => { location.hash = termHash(session.hubId, data.hostId); };
+      const titleEl = body[1];
+      if (session.attachable) {
+        titleEl.setAttribute('role', 'button');
+        titleEl.setAttribute('tabindex', '0');
+        titleEl.setAttribute('title', 'Open this session');
+        titleEl.classList.add('openable');
+        titleEl.addEventListener('click', go);
+        titleEl.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); go(); } });
+      }
+      const open = session.attachable
+        ? h('button', {
+            class: 'btn small open', 'data-key': `session:${data.hostId || ''}:${session.key}`,
+            title: 'Open this session\'s terminal',
+            onclick: (event) => { event.stopPropagation(); go(); },
+          }, 'Open', icon('right'))
+        : h('span', { class: 'session-go' }, session.background ? 'Background' : 'Terminal only');
+      body[2] = approvalBox(session, approvals, data, open);
+      return h('div', { class: 'session approving' }, body);
     }
     if (session.attachable && data.down) {
       return h('div', { class: 'session external', title: `${data.name} is unreachable.` }, body,
@@ -594,7 +607,7 @@
     : `Approving everything until ${new Date(rule.until - view.offset).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 
   /** Approve / Deny / ⋯ and the command summary, in place of the status text. */
-  function approvalBox(session, approvals, view) {
+  function approvalBox(session, approvals, view, openBtn) {
     const first = approvals[0];
     const menuId = `approve:${view.hostId || ''}:${session.key}`;
     const open = ui.menu === menuId;
@@ -625,7 +638,8 @@
           open && h('div', { class: 'menu right', role: 'menu' },
             rule('5m', 'Approve all for 5 minutes'),
             rule('session', 'Approve all for this session', 'Until the session ends or the hub restarts.'),
-            autoApproveActive(session.autoApprove, view) && rule('off', 'Stop approving')))),
+            autoApproveActive(session.autoApprove, view) && rule('off', 'Stop approving'))),
+        openBtn),
       h('div', { class: 'approval-summary' }, (first.summary || first.tool || 'Permission request') + extra));
   }
 
