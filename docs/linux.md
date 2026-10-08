@@ -54,6 +54,13 @@ PYTHONPATH=. .venv/bin/python -m unittest discover tests
 .venv/bin/ruff check shiptray tests
 ```
 
+The applet runs through XWayland so its popup can anchor to the tray icon.
+Qt's X11 plugin needs the XCB utility libraries; without them it silently
+falls back to native Wayland and KWin places the popup wherever it likes.
+On Arch: `sudo pacman -S xcb-util-cursor xcb-util-wm xcb-util-image
+xcb-util-keysyms xcb-util-renderutil`. Check with `ldd` on the venv's
+`PySide6/Qt/plugins/platforms/libqxcb.so`.
+
 Inside a distrobox, `setup.sh` records the box's name and the launcher
 re-enters it when started from the host, so the menu entry and autostart work
 from the host session.
