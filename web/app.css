@@ -711,3 +711,30 @@ section.host + section.host { margin-top: 56px; padding-top: 28px; border-top: 1
 .host-foot code { font: 12px var(--mono); color: var(--dim); }
 section.host.down > :not(.host-head):not(.banner) { opacity: 0.45; }
 section.host.down .btn, section.host.down .session, section.host.down .recent-item { cursor: not-allowed; }
+
+/* ── Several machines: Running segments over tabbed Projects ── */
+
+.running-all section.host + section.host { margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--line); }
+.running-all .host-head { margin-bottom: 12px; }
+.running-all .host-head h2 { font-size: 16px; }
+.host-idle { color: var(--faint); font-size: 13.5px; padding: 0 2px; }
+
+.tabs {
+  display: flex; gap: 4px; margin: 0 0 14px;
+  border-bottom: 1px solid var(--line-strong);
+  overflow-x: auto; scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: 0 0 auto; display: inline-flex; align-items: baseline; gap: 7px;
+  padding: 8px 12px 9px; margin-bottom: -1px;
+  border: 0; border-bottom: 2px solid transparent; background: none;
+  font: 550 14px var(--sans); color: var(--dim); cursor: pointer; white-space: nowrap;
+}
+.tab:hover { color: var(--text); }
+.tab.on { color: var(--text); border-bottom-color: var(--accent); }
+.tab.down .tab-name { opacity: 0.55; }
+.tab .count { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px 6px 0 0; }
+.projects-host .host-head { margin-bottom: 12px; }
+.projects-host .empty { margin-top: 0; }

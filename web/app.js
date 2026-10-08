@@ -379,7 +379,7 @@
     // Ages tick over a few times a minute; otherwise only repaint when
     // something changed, and never under an open menu.
     const signature = JSON.stringify([
-      data && { ...data, now: 0, hosts: data.hosts && data.hosts.map((x) => ({ ...x, now: 0 })) }, ui.error, ui.notice, ui.unpaired, ui.filter, [...ui.open], ui.menu,
+      data && { ...data, now: 0, hosts: data.hosts && data.hosts.map((x) => ({ ...x, now: 0 })) }, ui.error, ui.notice, ui.unpaired, ui.filter, [...ui.open], ui.menu, ui.projectsTab,
       ui.launching, [...ui.answering], data ? Math.floor(Date.now() / 15000) : 0,
     ]);
     // A routine repaint waits for an open menu or a text selection in the
@@ -451,28 +451,108 @@
         parts.push(h('div', { class: 'empty' }, `No project matches “${ui.filter}”.`));
       }
     } else {
-      let shown = 0;
-      for (const view of views) {
-        const visible = view.projects.filter(matches);
-        // Searching: a machine with nothing that matches stays out of the way.
-        if (ui.filter && !visible.length) continue;
-        shown += 1;
-        parts.push(h('section', { class: `host${view.down ? ' down' : ''}`, 'aria-label': view.name },
-          h('div', { class: 'host-head' },
-            h('h2', null, view.name),
-            view.local && h('span', { class: 'tag' }, 'This hub'),
-            view.down && h('span', { class: 'host-state' },
-              view.lastSeen ? `Unreachable since ${ago(view.lastSeen, local)}` : 'Unreachable')),
-          !view.down && protocolBanner(view, true),
-          view.down && view.protocol !== PROTOCOL && h('div', { class: 'banner' },
-            `${view.name} was running a different build than this page (protocol ${view.protocol}).`),
-          ...hostBody(view, visible),
-          view.rootDisplay && h('div', { class: 'host-foot' },
-            'Projects are the folders in ', h('code', null, view.rootDisplay), ' on ', h('code', null, view.name), '.')));
-      }
-      if (!shown && ui.filter) parts.push(h('div', { class: 'empty' }, `No project matches “${ui.filter}”.`));
+      // Several machines: everything running on top, one segment per
+      // machine (this hub's first); below it the idle projects, one tab
+      // per machine, so the page doesn't grow by a whole list per member.
+      const ordered = [...views].sort((a, b) => Number(b.local) - Number(a.local));
+      parts.push(runningAll(ordered, local), projectTabs(ordered, local));
     }
     repaint(pageEl, parts);
+  }
+
+  /** A machine's name line: the hub's own marked, an unreachable one dated. */
+  function hostHead(view, local) {
+    return h('div', { class: 'host-head' },
+      h('h2', null, view.name),
+      view.local && h('span', { class: 'tag' }, 'This hub'),
+      view.down && h('span', { class: 'host-state' },
+        view.lastSeen ? `Unreachable since ${ago(view.lastSeen, local)}` : 'Unreachable'));
+  }
+
+  /** A machine's version trouble, live or remembered. */
+  function hostBanners(view) {
+    if (view.protocol === PROTOCOL) return [];
+    return [view.down
+      ? h('div', { class: 'banner' }, `${view.name} was running a different build than this page (protocol ${view.protocol}).`)
+      : h('div', { class: 'banner' },
+          `${view.name} is running a different build than this page, so some things may not work. `,
+          'Restart it when its sessions can end: ', h('code', null, 'claudeship hub stop'), ', then ',
+          h('code', null, 'claudeship hub start'), '.')];
+  }
+
+  /** Every machine's running sessions, one segment per machine. */
+  function runningAll(views, local) {
+    let total = 0;
+    const segments = [];
+    for (const view of views) {
+      const active = view.projects.filter(matches).filter((p) => p.sessions.length);
+      const elsewhere = ui.filter ? [] : view.elsewhere;
+      // Searching: a machine with nothing that matches stays out of the way.
+      if (ui.filter && !active.length) continue;
+      total += active.length + (elsewhere.length ? 1 : 0);
+      const tiles = active.map((p) => card(p, view));
+      if (elsewhere.length) {
+        tiles.push(h('article', { class: `card${elsewhere.some((s) => s.status === 'waiting') ? ' attention' : ''}` },
+          h('div', { class: 'card-head' },
+            h('div', { class: 'card-title' }, h('h3', null, 'Elsewhere')),
+            h('div', { class: 'card-path' }, `Outside ${view.rootDisplay || 'the projects folder'}`)),
+          h('div', { class: 'sessions' }, elsewhere.map((s) => sessionRow(s, null, view)))));
+      }
+      segments.push(h('section', { class: `host running-host${view.down ? ' down' : ''}`, 'aria-label': `Running on ${view.name}` },
+        hostHead(view, local),
+        ...hostBanners(view),
+        tiles.length
+          ? h('div', { class: 'cards' }, tiles)
+          : h('div', { class: 'host-idle' }, view.down ? 'Nothing was running when it was last seen.' : 'Nothing is running.')));
+    }
+    return h('section', { class: 'running-all' },
+      h('div', { class: 'section-head' },
+        h('h2', null, 'Running'),
+        h('span', { class: 'count' }, String(total))),
+      segments.length
+        ? segments
+        : h('div', { class: 'empty' }, ui.filter ? `Nothing running matches “${ui.filter}”.` : 'Nothing is running.'));
+  }
+
+  const TAB_KEY = 'claudeship.projectsTab';
+  function selectedTab(views) {
+    if (ui.projectsTab === undefined) {
+      try { ui.projectsTab = localStorage.getItem(TAB_KEY) || ''; } catch { ui.projectsTab = ''; }
+    }
+    return views.find((v) => (v.hostId || '') === ui.projectsTab) || views[0];
+  }
+  function chooseTab(view) {
+    ui.projectsTab = view.hostId || '';
+    try { localStorage.setItem(TAB_KEY, ui.projectsTab); } catch { /* per-browser nicety only */ }
+    render(true);
+  }
+
+  /** The idle projects, one tab per machine. */
+  function projectTabs(views, local) {
+    const chosen = selectedTab(views);
+    const idle = (view) => view.projects.filter(matches).filter((p) => !p.sessions.length);
+    const tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Computers' },
+      views.map((view) => {
+        const on = view === chosen;
+        return h('button', {
+          class: `tab${on ? ' on' : ''}${view.down ? ' down' : ''}`, role: 'tab', 'aria-selected': String(on),
+          'data-key': `tab:${view.hostId || ''}`, onclick: () => chooseTab(view),
+        }, h('span', { class: 'tab-name' }, view.name), h('span', { class: 'count' }, String(idle(view).length)));
+      }));
+    const rest = idle(chosen);
+    return h('section', { class: 'projects-all' },
+      h('div', { class: 'section-head' },
+        h('h2', null, 'Projects'),
+        h('span', { class: 'where' }, chosen.rootDisplay || '')),
+      tabs,
+      h('section', { class: `host projects-host${chosen.down ? ' down' : ''}`, role: 'tabpanel', 'aria-label': `Projects on ${chosen.name}` },
+        chosen.down && h('div', { class: 'host-head' }, h('span', { class: 'host-state' },
+          chosen.lastSeen ? `${chosen.name} unreachable since ${ago(chosen.lastSeen, local)}` : `${chosen.name} is unreachable`)),
+        rest.length
+          ? h('div', { class: 'list' }, rest.map((p) => row(p, chosen)))
+          : h('div', { class: 'empty' }, ui.filter ? `No project on ${chosen.name} matches “${ui.filter}”.` : `Every project on ${chosen.name} is running.`),
+        chosen.rootDisplay && h('div', { class: 'host-foot' },
+          'Projects are the folders in ', h('code', null, chosen.rootDisplay), ' on ', h('code', null, chosen.name), '.')));
   }
 
   /** Running, Running elsewhere, and Projects for one host. */
