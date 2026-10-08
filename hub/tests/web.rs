@@ -275,6 +275,18 @@ impl WebHub {
                 .contains("sec-websocket-accept: s3pplmbitxaq9kygzzhzrbk+xoo="),
             "{head}"
         );
+        // Apple's URLSession (the phone's WebSocket) refuses a 101 whose
+        // Connection header also says close — what hyper's
+        // `keep_alive(false)` used to append. Browsers let it pass, so
+        // only the test and the phone would notice a regression.
+        let connection = head
+            .to_lowercase()
+            .lines()
+            .find_map(|l| l.strip_prefix("connection:"))
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(connection, "upgrade", "the 101's Connection header: {head}");
         Ok(Ws {
             stream,
             pending: raw[end..].to_vec(),

@@ -144,8 +144,13 @@ async fn serve(stream: TcpStream, shared: Arc<Shared>, slot: Arc<ConnectionSlot>
             }
         })
     };
+    // One request per connection comes from the router's `Connection: close`
+    // on every answer (hyper closes after a response that says so), not
+    // from `keep_alive(false)`: that makes hyper append `close` to the 101
+    // too (`Connection: upgrade, close`), and Apple's URLSession — the
+    // phone's WebSocket — rejects such a handshake as a bad response.
+    // Browsers tolerate it, which is why only the phone's terminal broke.
     let connection = hyper::server::conn::http1::Builder::new()
-        .keep_alive(false)
         // A request's head past this is refused (431), as the Swift hub's.
         .max_buf_size(MAX_HEAD)
         .serve_connection(TokioIo::new(stream), TowerToHyperService::new(service))

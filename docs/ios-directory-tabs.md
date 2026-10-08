@@ -1,9 +1,10 @@
 # iOS: Running on top, Projects tabbed by computer
 
-Status: **to do** (written on Linux, which can't build the iOS app). The web
-page already has this layout; make the phone's directory match it. Mostly a
-reorganization of `ios/ClaudeShip/Views/DirectoryView.swift`; no API or model
-changes.
+Status: **done** (2026-10-08, `ios/ClaudeShip/Views/DirectoryView.swift`,
+as suggested below; checked on the simulator against the Mac + steamdeck
+swarm with `SIMCTL_CHILD_CH_OFF=running` and `-projectsTab`). The web page
+already had this layout; the phone's directory matches it. A reorganization
+of `DirectoryView.swift` only; no API or model changes.
 
 ## What the web page does now (`web/app.js`, `render` → `runningAll`, `projectTabs`)
 

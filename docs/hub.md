@@ -255,7 +255,7 @@ answered within 15 s is dropped.
 
 Every answer but the 101 carries `Cache-Control: no-store`,
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
-`Connection: close`; the page's files add the CSP (`connect-src` spells out
+`Connection: close` (the router's header is what closes the connection, not hyper's `keep_alive(false)`: that appends `close` to the 101 as well, and Apple's URLSession — the phone's WebSocket — rejects a handshake that says `Connection: upgrade, close`); the page's files add the CSP (`connect-src` spells out
 `ws://<host> wss://<host>`: Safari doesn't count ws: under `'self'`). A
 Host that fails the check is 403 "This hub answers only to localhost or its
 Tailscale IP address."

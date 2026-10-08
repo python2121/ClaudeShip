@@ -58,21 +58,30 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
   "Pair again" in a refused hub's section. Settings: one hub → its settings
   inline as before; several → a list (swipe or open one to unpair; the
   default mode is per hub).
-- The directory is one run of sections per hub (`HubSections`), headed by
-  a `HubTitle` row only when two or more are paired — with one, it looks as
-  it always did. Offline (`OfflineNote`), refused, and the protocol banner
-  are per hub. Session screens are `SessionRoute { hub, host, id }`; RootView
+- The directory is Running on top, then Projects (the web page's
+  layout, `docs/ios-directory-tabs.md`): one run of running sections per
+  hub (`HubSections`), headed by a `HubTitle` row only when two or more
+  are paired, then one Projects block listing one machine's idle
+  projects at a time — a tab per computer (`ProjectsTab`: segmented up to
+  three, a menu beyond; label = name · idle count after the filter,
+  dimmed when unreachable) when several are in view, remembered in
+  `@AppStorage("projectsTab")` (store UUID + host id; a vanished tab
+  falls back to the first). With one machine there is no picker and the
+  directory looks as it always did. Offline (`OfflineNote`), refused, and
+  the protocol banner are per hub. Session screens are `SessionRoute { hub, host, id }`; RootView
   puts that hub's store in the environment. The top bar's quick "+" asks
   which machine (confirmation dialog) when two or more are in view.
 - **Swarm (phase 10).** A hub's `/api/state` may carry `hosts: [HubHost]`
   (every machine of its swarm, local first; each field optional, absent
   on an older hub, which then reads as one host: the top-level fields,
-  `HubState.localHost`). The directory renders per paired hub, then per
-  host (`HostSections`): a `HostTitle` header (the hub's own machine
-  marked "hub") only when the hub shows more than its own machine;
-  an unreachable host keeps its last projects, disabled, under
-  "Unreachable since <lastSeen>"; a protocol banner per host (vs this
-  app, and vs the home hub, which won't relay across builds).
+  `HubState.localHost`). The Running part renders per paired hub, then
+  per host (`HostSections(part: .running)`): a `HostTitle` header (the
+  hub's own machine marked "hub") only when the hub shows more than its
+  own machine; an unreachable host says "Unreachable since <lastSeen>"
+  (and "Nothing was running when it was last seen"), its Projects tab is
+  dimmed and its list (`HostSections(part: .projects)`) disabled; a
+  protocol banner per host (vs this app, and vs the home hub, which
+  won't relay across builds).
   **Dedupe** (`HubRegistry.hostOwners`): every paired member reports the
   whole swarm, so each host id appears once — under the paired hub where
   it is `local`, else the first (pairing order) reporting it `reachable`,
@@ -169,6 +178,8 @@ in Xcode's session). **Needs full Xcode** for the iOS SDK.
   several hubs; a tiny Python server answering `/api/state` on two ports
   is enough to lay out the multi-hub directory), `-session <hub
   id>`, `-expand <project name>`, `-swarm` (open the add-to-swarm step for
-  the last hub paired) / `-swarm-confirm` (…and press Add); `SIMCTL_CHILD_CH_OFF=glyph,launch,header,tally` turns directory
-  pieces off for bisecting layout trouble. Screenshots:
+  the last hub paired) / `-swarm-confirm` (…and press Add); `SIMCTL_CHILD_CH_OFF=glyph,launch,header,tally,running` turns directory
+  pieces off for bisecting layout trouble (`running` hides the Running
+  part, which puts the Projects tabs on the first screen); `-projectsTab
+  <store uuid>/<host id>` preselects a tab. Screenshots:
   `xcrun simctl io booted screenshot x.png`.

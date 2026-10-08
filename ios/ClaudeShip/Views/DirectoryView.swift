@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The project directory: what's running first, then every project
 /// folder on the Mac, in the hub's order.
-/// `SIMCTL_CHILD_CH_OFF=glyph,launch,header,tally,search,recent` turns
+/// `SIMCTL_CHILD_CH_OFF=glyph,launch,header,tally,search,recent,running` turns
 /// pieces off at launch, for bisecting layout trouble in the simulator.
 enum DebugOff {
     static let set = Set((ProcessInfo.processInfo.environment["CH_OFF"] ?? "").split(separator: ",").map(String.init))
@@ -21,17 +21,27 @@ struct DirectoryView: View {
     @State private var choosingHost = false
     /// A hub that refused this phone, being paired again.
     @State private var repairing: HubStore?
+    /// Which computer's idle projects the Projects block lists
+    /// (`ProjectsTab.id`); remembered across launches, as the web page
+    /// remembers its tab. Empty or stale: the first tab.
+    @AppStorage("projectsTab") private var projectsTab = ""
     /// `-expand <name>` at launch (simulator scripting).
     nonisolated(unsafe) static var initialExpanded: String?
 
     var body: some View {
         List {
-            // One run of sections per hub; with only one hub, no title row —
-            // the directory looks exactly as it did before there could be two.
-            ForEach(registry.stores) { store in
-                HubSections(filter: filter, expanded: $expanded, titled: registry.stores.count > 1) { repairing = store }
-                    .environment(store)
+            // What's running, per hub and then per machine; with only one
+            // hub, no title row — the directory looks exactly as it did
+            // before there could be two.
+            if !DebugOff.contains("running") {
+                ForEach(registry.stores) { store in
+                    HubSections(filter: filter, expanded: $expanded, titled: registry.stores.count > 1) { repairing = store }
+                        .environment(store)
+                }
             }
+            // Then the idle projects of one machine at a time, as on the web
+            // page: a tab per computer rather than a whole list per member.
+            projects
         }
         .listStyle(.insetGrouped)
         .onChange(of: registry.stores.map { $0.state?.allHosts.map(\.projectList.count) ?? [] }, initial: true) { _, _ in
@@ -40,6 +50,7 @@ struct DirectoryView: View {
                 for host in registry.hosts(of: store) {
                     if let project = host.projectList.first(where: { $0.name == name }) {
                         expanded.insert(HostSections.key(store, host.target, project.path))
+                        projectsTab = ProjectsTab(store: store, host: host).id
                         Self.initialExpanded = nil
                         return
                     }
@@ -125,6 +136,67 @@ struct DirectoryView: View {
         Task { if let id = await store.launch(path: home, mode: "auto", host: host) { navigate(store.route(id, host: host)) } }
     }
 
+    /// A computer whose idle projects the Projects block can list: the hub
+    /// that shows it (after the swarm dedupe) and the host.
+    private struct ProjectsTab: Identifiable {
+        let store: HubStore
+        let host: HubHost
+        /// `HostSections.key` without the path.
+        var id: String { "\(store.key.uuidString)/\(host.id)" }
+    }
+
+    /// Every machine in view, in store order and then the hub's host
+    /// order (its own machine first): one tab each. Only hubs answering
+    /// count — an offline hub has its note, and its machine shows under
+    /// another member that still reaches it.
+    private var projectsTabs: [ProjectsTab] {
+        registry.stores.filter { !$0.offline && !$0.unpaired && $0.state != nil }.flatMap { store in
+            registry.hosts(of: store).map { ProjectsTab(store: store, host: $0) }
+        }
+    }
+
+    /// The remembered tab, or the first when it has gone.
+    private var chosenTab: ProjectsTab? {
+        let tabs = projectsTabs
+        return tabs.first { $0.id == projectsTab } ?? tabs.first
+    }
+
+    @ViewBuilder private var projects: some View {
+        let tabs = projectsTabs
+        if let chosen = chosenTab {
+            if tabs.count > 1 {
+                Section {
+                    tabPicker(tabs, chosen: chosen)
+                }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 8, leading: 4, bottom: 0, trailing: 4))
+            }
+            HostSections(host: chosen.host, homeProtocol: chosen.store.state?.protocol, filter: filter,
+                         expanded: $expanded, headed: tabs.count > 1, part: .projects)
+                .environment(chosen.store)
+                .environment(\.hostScope, HostScope(target: chosen.host.target, defaultMode: chosen.host.defaultPermissionMode))
+        }
+    }
+
+    /// Segmented for a few computers, a menu beyond that (segments get
+    /// cramped). Each label is the computer's name and how many idle
+    /// projects it has (after the filter); an unreachable one is dimmed.
+    @ViewBuilder private func tabPicker(_ tabs: [ProjectsTab], chosen: ProjectsTab) -> some View {
+        let selection = Binding<String>(get: { chosen.id }, set: { projectsTab = $0 })
+        let picker = Picker("Projects on", selection: selection) {
+            ForEach(tabs) { tab in
+                Text("\(tab.host.displayName) · \(HostSections.idleCount(of: tab.host, filter: filter))")
+                    .foregroundStyle(tab.host.isReachable ? .primary : .secondary)
+                    .tag(tab.id)
+            }
+        }
+        if tabs.count <= 3 {
+            picker.pickerStyle(.segmented).labelsHidden()
+        } else {
+            picker.pickerStyle(.menu)
+        }
+    }
+
     private var tally: some View {
         let all = registry.stores.flatMap { store in
             store.offline || store.unpaired ? [] : registry.hosts(of: store).filter(\.isReachable).flatMap(\.allSessions)
@@ -195,7 +267,7 @@ private struct HubSections: View {
             // Headed when it's more than this hub's own machine.
             let headed = hosts.count > 1 || hosts.contains { $0.target != nil }
             ForEach(hosts) { host in
-                HostSections(host: host, homeProtocol: state.protocol, filter: filter, expanded: $expanded, headed: headed)
+                HostSections(host: host, homeProtocol: state.protocol, filter: filter, expanded: $expanded, headed: headed, part: .running)
                     .environment(\.hostScope, HostScope(target: host.target, defaultMode: host.defaultPermissionMode))
             }
         } else if store.error == nil && !store.unpaired {
@@ -204,9 +276,14 @@ private struct HubSections: View {
     }
 }
 
-/// One machine's part of the directory: what's running first, then every
-/// project folder on it, in the hub's order.
+/// One machine's part of the directory, in two parts the directory places
+/// separately: what's running on it (`.running`: its name when several
+/// machines are in view, reachability, version notices, the running
+/// project cards, "Running elsewhere"), and its idle project folders
+/// (`.projects`), in the hub's order.
 private struct HostSections: View {
+    enum Part { case running, projects }
+
     @Environment(HubStore.self) private var store
     let host: HubHost
     /// The answering hub's protocol: it relays only to a peer on the same.
@@ -215,12 +292,26 @@ private struct HostSections: View {
     @Binding var expanded: Set<String>
     /// Several machines in view: head the run with this one's name.
     let headed: Bool
+    let part: Part
 
     static func key(_ store: HubStore, _ host: String?, _ path: String) -> String {
         "\(store.key.uuidString)/\(host ?? "")/\(path)"
     }
 
+    /// How many of the machine's idle projects the filter leaves: the
+    /// Projects tab's count.
+    static func idleCount(of host: HubHost, filter: String) -> Int {
+        host.projectList.filter { $0.sessions.isEmpty && matches($0, filter: filter) }.count
+    }
+
     var body: some View {
+        switch part {
+        case .running: running
+        case .projects: projects
+        }
+    }
+
+    @ViewBuilder private var running: some View {
         if headed {
             Section {
                 HostTitle(host: host)
@@ -251,12 +342,12 @@ private struct HostSections: View {
             }
         }
         Group {
-            let visible = host.projectList.filter(matches)
-            let running = visible.filter { !$0.sessions.isEmpty }
-            let rest = visible.filter { $0.sessions.isEmpty }
-            if running.isEmpty && filter.isEmpty && host.isReachable {
+            let running = host.projectList.filter { !$0.sessions.isEmpty && matches($0) }
+            if running.isEmpty && filter.isEmpty {
                 Section("Running") {
-                    Text("Nothing is running. Start a session below, or run claudeship in a terminal on the Mac.")
+                    Text(host.isReachable
+                         ? "Nothing is running. Start a session below, or run claudeship in a terminal on the Mac."
+                         : "Nothing was running when it was last seen.")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -281,30 +372,37 @@ private struct HostSections: View {
                     ForEach(host.elsewhereList) { session in SessionRow(session: session, project: nil) }
                 }
             }
-            if !rest.isEmpty {
-                Section {
-                    ForEach(rest) { project in
-                        ProjectRow(project: project, expanded: isExpanded(project)) { toggle(project) }
-                        if isExpanded(project) {
-                            if !DebugOff.contains("launch") { launchRow(project) }
-                            recentRows(project)
-                        }
-                    }
-                } header: {
-                    HStack {
-                        Text("Projects")
-                        Spacer()
-                        Text(host.rootDisplay ?? "").font(.caption.monospaced()).textCase(nil)
-                    }
-                }
-            }
         }
         // An unreachable machine's last state, for reference: nothing on it
         // can be started, opened, or answered until it is back.
         .disabled(!host.isReachable)
     }
 
-    private func matches(_ project: HubProject) -> Bool {
+    @ViewBuilder private var projects: some View {
+        let rest = host.projectList.filter { $0.sessions.isEmpty && matches($0) }
+        if !rest.isEmpty {
+            Section {
+                ForEach(rest) { project in
+                    ProjectRow(project: project, expanded: isExpanded(project)) { toggle(project) }
+                    if isExpanded(project) {
+                        if !DebugOff.contains("launch") { launchRow(project) }
+                        recentRows(project)
+                    }
+                }
+            } header: {
+                HStack {
+                    Text("Projects")
+                    Spacer()
+                    Text(host.rootDisplay ?? "").font(.caption.monospaced()).textCase(nil)
+                }
+            }
+            .disabled(!host.isReachable)
+        }
+    }
+
+    private func matches(_ project: HubProject) -> Bool { Self.matches(project, filter: filter) }
+
+    static func matches(_ project: HubProject, filter: String) -> Bool {
         let needle = filter.trimmingCharacters(in: .whitespaces).lowercased()
         if needle.isEmpty { return true }
         let haystack = ([project.name, project.branch ?? ""] + project.sessions.compactMap(\.title)
