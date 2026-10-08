@@ -427,12 +427,33 @@ pub fn install(load: bool) -> ! {
         if load {
             let target = format!("{}/{}", domain(), label());
             if quiet("launchctl", &["print", &target]) {
-                let _ = quiet("launchctl", &["bootout", &target]);
+                // Already loaded: leave it. Unloading would stop the running
+                // hub and end its sessions, and an install never does that.
+                // launchd keeps the definition it loaded; the rewritten plist
+                // is read the next time the agent is bootstrapped.
+                println!(
+                    "already loaded, left running: launchctl print {target}\n\
+                     (the plist on disk was rewritten; it is read at the next bootstrap — \
+                     after `claudeship hub stop --force`, run install-service again)"
+                );
+            } else {
+                // Right after a bootout launchd can refuse a bootstrap for a
+                // moment (error 5) while the old job is still going away.
+                let mut loaded = false;
+                for attempt in 0..5 {
+                    if attempt > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                    if run("launchctl", &["bootstrap", &domain(), &path.to_string_lossy()]) {
+                        loaded = true;
+                        break;
+                    }
+                }
+                if !loaded {
+                    crate::cli::fail(&format!("launchctl bootstrap {} {} failed", domain(), path.display()));
+                }
+                println!("loaded it: launchctl print {target}");
             }
-            if !run("launchctl", &["bootstrap", &domain(), &path.to_string_lossy()]) {
-                crate::cli::fail(&format!("launchctl bootstrap {} {} failed", domain(), path.display()));
-            }
-            println!("loaded it: launchctl print {target}");
         } else {
             println!("not loaded (--no-load): launchctl bootstrap {} {}", domain(), path.display());
         }
